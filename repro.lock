@@ -3,7 +3,7 @@ schema = "reprobuild.solved-graph-lock.v2"
 [lock]
 platform = "amd64-linux"
 optimal = false
-inputs_digest = "fnv1a64:e2b4ecce113e9de5"
+inputs_digest = "fnv1a64:a5374333e887649d"
 variants = []
-packages = [{ name = "gcc", version = "12.0.0", source = "gcc" }, { name = "nim", version = "2.0.0", source = "nim" }, { name = "nim_pty", version = "0.1.0", source = "nim_pty" }]
-deps = [{ name = "nim-pty", path = ".", coord_kind = "vcs", url = "", ref = "mcr-stege0-and-fixes", revision = "ec0ab4e68aab752703d266cd77681ac29d9bf5b1", integrity = "git-sha1:ec0ab4e68aab752703d266cd77681ac29d9bf5b1", version = "", visibility = "public", participation = "", depends = "", groups = "" }]
+packages = [{ name = "gcc", version = "12.0.0", source = "gcc", selection = "selected" }, { name = "nim", version = "2.0.0", source = "nim", selection = "selected" }, { name = "nim_pty", version = "0.1.0", source = "nim_pty", selection = "selected" }]
+deps = [{ name = "nim-pty", path = ".", coord_kind = "vcs", url = "https://github.com/metacraft-labs/nim-pty", ref = "dev", revision = "fbd6c874c64890a921544f5cb0a42051d96684bc", integrity = "git-sha1:fbd6c874c64890a921544f5cb0a42051d96684bc", version = "", visibility = "public", participation = "", depends = "", tags = "" }]
