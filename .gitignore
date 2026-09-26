@@ -2,6 +2,9 @@
 .pre-commit-config.yaml
 nimcache/
 nim-cache/
+# Per-checkout nimcache (config.nims): every Nim compile in this checkout
+# keeps its intermediate files here, never in the shared ~/.cache/nim.
+.nimcache/
 result
 result-*
 test-logs/
