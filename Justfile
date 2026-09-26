@@ -24,9 +24,12 @@ src-paths := "--path:src --path:tests"
 # Hermetic + style checks — applied to every nim invocation in this file.
 nim-flags := "--skipParentCfg --skipUserCfg --styleCheck:usages --styleCheck:error --passL:-lutil"
 
-# Per-checkout nimcache root (see config.nims).  Nim's default,
+# Per-checkout nimcache (see config.nims), relative to the recipe working
+# directory, which is this file's directory.  Nim's default,
 # `~/.cache/nim/<module>_<d|r>`, is shared by every checkout on the machine.
-nimcache := justfile_directory() / ".nimcache"
+# (Relative on purpose: an absolute Windows path would lose its backslashes
+# in the bash recipes that the Windows CI lane runs.)
+nimcache := ".nimcache"
 
 # The ordered list of test files. Adding a new test_*.nim here gates it on CI.
 tests := "tests/test_pty_spawn_echo.nim tests/test_pty_signals.nim tests/test_pty_window_size.nim tests/test_no_leaks.nim tests/test_utf8_split.nim tests/test_pty_cross_platform.nim tests/test_api_invariants.nim tests/test_nimcache_is_worktree_local.nim"
