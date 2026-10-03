@@ -4,7 +4,7 @@
 ## reports `40 100`. We use `stty size` as the introspection helper because
 ## it's universally available and prints "<rows> <cols>".
 
-import std/[strutils, unittest]
+import std/[monotimes, strutils, unittest]
 import nim_pty
 import test_helpers
 # `initDuration` from std/times is re-exported by nim_pty.
@@ -38,37 +38,39 @@ suite "L1: window size round trip":
     check clean.contains("80")
 
   test "setWindowSize on a running session updates the live size":
-    # Spawn a long-running shell; query stty before and after a resize.
-    let shellBin = findBin("sh")
-    if shellBin.len == 0:
-      skip()
-    else:
-      var sess = spawnPty(shellBin,
-        ["-c", "stty size; sleep 0.2; stty size"],
-        inheritedEnv(), SpawnOptions(cols: 80, rows: 24))
-      # Wait briefly for the first stty size to print, then resize.
-      var early = ""
-      while early.splitLines().len < 2:
-        let chunk = readBytes(sess, 4096, initDuration(milliseconds = 50))
-        if chunk.len > 0:
-          early.add(cast[string](chunk))
-        else:
-          break
+    # No mock: a real shell/stty and actual PTY stdin establish ordering.
+    # Disable real terminal echo so only the two exact geometry lines appear.
+    let shellBin = requireBin("sh")
+    let deadline = getMonoTime() + initDuration(seconds = 2)
+    var sess = spawnPty(shellBin,
+      ["-c", "stty -echo; stty size; IFS= read -r marker; [ \"$marker\" = resized ] || exit 7; stty size"],
+      inheritedEnv(), SpawnOptions(cols: 80, rows: 24))
+    try:
+      var pending = ""
+      proc nextLine(): string =
+        while '\n' notin pending:
+          doAssert getMonoTime() < deadline, "PTY resize transaction exceeded its original two-second budget"
+          let remaining = deadline - getMonoTime()
+          let slice = min(remaining, initDuration(milliseconds = 50))
+          let chunk = readBytes(sess, 4096, slice)
+          pending.add(cast[string](chunk))
+        let ending = pending.find('\n')
+        result = pending[0 ..< ending]
+        result.removeSuffix('\r')
+        pending = pending[ending + 1 .. ^1]
+      doAssert nextLine() == "24 80", "initial PTY geometry must precede resize"
       setWindowSize(sess, 132, 50)
-      let rest = readAllAvailable(sess, initDuration(seconds = 2))
-      discard waitExitCode(sess)
-      let total = early & rest
-      let lines = total.splitLines()
-      var sizes: seq[string] = @[]
-      for l in lines:
-        let stripped = l.strip()
-        if stripped.len > 0 and stripped.splitWhitespace().len == 2:
-          sizes.add(stripped)
-      check sizes.len >= 2
-      if sizes.len >= 2:
-        # First measurement: 24 80
-        check sizes[0].contains("80")
-        check sizes[0].contains("24")
-        # Last measurement: 50 132
-        check sizes[^1].contains("132")
-        check sizes[^1].contains("50")
+      write(sess, cast[seq[byte]]("resized\n"))
+      doAssert nextLine() == "50 132", "child must observe the exact live resize"
+      while isAlive(sess):
+        doAssert getMonoTime() < deadline, "child did not exit within the resize transaction"
+        let remaining = deadline - getMonoTime()
+        let chunk = readBytes(sess, 4096, min(remaining, initDuration(milliseconds = 50)))
+        pending.add(cast[string](chunk))
+      doAssert pending.len == 0, "unexpected output after the geometry protocol"
+      check waitExitCode(sess) == 0
+    finally:
+      try:
+        terminate(sess)
+      finally:
+        close(sess)
