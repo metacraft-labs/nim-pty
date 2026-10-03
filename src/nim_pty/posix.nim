@@ -375,6 +375,13 @@ proc spawnPty*(cmd: string;
   ## need to allocate a `Table`. The child sees ONLY these variables — if
   ## you want to inherit the parent environment, pass `os.envPairs()`.
   var pair = openPty()
+  # Set geometry before the child can execute and inspect its terminal.
+  # Initial window size.
+  try:
+    setWindowSize(pair.master, opts.cols, opts.rows)
+  except CatchableError:
+    # Window size is best-effort; many child programs don't care.
+    discard
   let masterFd = pair.master.fd
   let slaveFd = pair.slave.fd
   # The child will own the slave; the parent only ever needs the master.
@@ -444,12 +451,6 @@ proc spawnPty*(cmd: string;
   discard close(slaveFd)
   pair.slave.fd = -1
   pair.slave.closed = true
-  # Initial window size.
-  try:
-    setWindowSize(pair.master, opts.cols, opts.rows)
-  except CatchableError:
-    # Window size is best-effort; many child programs don't care.
-    discard
   result = PtySession(
     master: PtyHandle(fd: pair.master.fd, closed: false),
     pid: pid,
