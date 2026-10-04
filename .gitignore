@@ -1,5 +1,4 @@
 .direnv/
-.pre-commit-config.yaml
 nimcache/
 nim-cache/
 # Per-checkout nimcache (config.nims): every Nim compile in this checkout
