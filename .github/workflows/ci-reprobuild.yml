@@ -80,16 +80,65 @@ jobs:
           env-flavor: reprobuild
           gh-token: ${{ steps.ci_token.outputs.token }}
 
+      - name: Bind explicit Linux Repro runtime source
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          package_json="$RUNNER_TEMP/pty-explicit-repro-package.json"
+          nix build --no-link --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d#reprobuild'  > "$package_json"
+          package="$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(x[0]["outputs"]["out"])' "$package_json")"
+          receipt="$RUNNER_TEMP/pty-repro-runtime-receipt"
+          mkdir "$receipt"
+          python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(json.dumps({"drvPath":x[0]["drvPath"],"outputs":x[0]["outputs"]},indent=2))' "$package_json" > "$receipt/package.json"
+          test -x "$package/bin/repro"
+          test -x "$package/bin/.repro-wrapped"
+          test -x "$package/libexec/reprobuild-nix-daemon"
+          printf 'REPROBUILD_REPRO=%s/bin/repro\n' "$package" >> "$GITHUB_ENV"
+          printf 'REPROBUILD_NIX_DAEMON_BIN=%s/libexec/reprobuild-nix-daemon\n' "$package" >> "$GITHUB_ENV"
+          printf '%s/bin\n' "$package" >> "$GITHUB_PATH"
+          nix flake metadata --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d' > "$RUNNER_TEMP/pty-explicit-repro-source.json"
+          python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; print(json.dumps({"locked":x["locked"],"path":x["path"]},indent=2))' "$RUNNER_TEMP/pty-explicit-repro-source.json" > "$receipt/source.json"
+          source_root="$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; print(x["path"])' "$RUNNER_TEMP/pty-explicit-repro-source.json")"
+          sha256sum "$source_root/flake.nix" "$source_root/flake.lock" "$package/bin/repro" "$package/bin/.repro-wrapped" "$package/libexec/reprobuild-nix-daemon" | tee "$receipt/identities.sha256"
+
+      - name: Retain Linux runtime source and package identities
+        if: always() && matrix.os == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-repro-runtime-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pty-repro-runtime-receipt/
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: repro build
         # Builds the conventional `build` collection declared in
         # `repro.nim`. Verifies the primary shipping artefact (the
         # recorder binary or extension) materialises through the
         # reprobuild engine identically to `just build`.
+        if: matrix.os != 'linux'
         run: dev-exec repro build
+
+      - name: repro build (explicit Linux runtime)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          test -f repro.nim
+          "$REPROBUILD_REPRO" build --daemon=off --tool-provisioning=path
 
       - name: repro test
         # Materialises the `test` collection.
+        if: matrix.os != 'linux'
         run: dev-exec repro test
+
+      - name: repro test (explicit Linux runtime)
+        if: matrix.os == 'linux'
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          "$REPROBUILD_REPRO" test --daemon=off --tool-provisioning=path
 
       - name: just build (cross-check)
         # Re-runs the legacy `just build` path inside the same env so
