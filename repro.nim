@@ -223,6 +223,10 @@ package nim_pty:
         extraPassL = linuxPassL,
         extraInputs = @["src"],
         actionId = "nim_pty.test_build." & stem)
+      when defined(linux):
+        # Each typed compile must retain its already-declared C backend in
+        # the selected action tool scope; package uses alone is insufficient.
+        appendRegisteredActionToolIdentityRefs(edge.action.id, ["gcc"])
       buildActions.add(edge.action)
       # ``registerImplicitName = false`` because the BUILD edge already owns
       # the binary basename as the implicit target name; the explicit
