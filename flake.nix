@@ -90,6 +90,8 @@
               echo "nim-pty dev shell — nim $(nim --version 2>&1 | head -1)"
             '';
           };
+          packages.ci-receipt-python = pkgs.python3;
+
           packages.default = pkgs.stdenvNoCC.mkDerivation {
             pname = "nim-pty";
             version = "0.1.0";
