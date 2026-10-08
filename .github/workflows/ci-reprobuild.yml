@@ -80,6 +80,13 @@ jobs:
           env-flavor: reprobuild
           gh-token: ${{ steps.ci_token.outputs.token }}
 
+      - name: Provision declared Linux Nix acquisition backend
+        if: matrix.os == 'linux'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@dev
+        with:
+          gh-token: ${{ steps.ci_token.outputs.token }}
+          token-owner: metacraft-labs
+
       - name: Bind explicit Linux Repro runtime source
         if: matrix.os == 'linux'
         shell: bash
