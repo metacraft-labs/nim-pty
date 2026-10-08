@@ -114,6 +114,10 @@ jobs:
           nix flake metadata --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d' > "$RUNNER_TEMP/pty-explicit-repro-source.json"
           "$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; print(json.dumps({"locked":x["locked"],"path":x["path"]},indent=2))' "$RUNNER_TEMP/pty-explicit-repro-source.json" > "$receipt/source.json"
           source_root="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; print(x["path"])' "$RUNNER_TEMP/pty-explicit-repro-source.json")"
+          nix flake prefetch --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d' > "$receipt/source-prefetch.json"
+          "$receipt_python" -c 'import json,sys; metadata=json.load(open(sys.argv[1])); prefetch=json.load(open(sys.argv[2])); assert metadata["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; assert prefetch["storePath"]==metadata["path"]; assert prefetch["hash"]==metadata["locked"]["narHash"]' "$RUNNER_TEMP/pty-explicit-repro-source.json" "$receipt/source-prefetch.json"
+          nix hash path --type sha256 --sri "$source_root" > "$receipt/source-realized-nar-hash.txt"
+          "$receipt_python" -c 'import json,sys; metadata=json.load(open(sys.argv[1])); assert open(sys.argv[2]).read().strip()==metadata["locked"]["narHash"]' "$RUNNER_TEMP/pty-explicit-repro-source.json" "$receipt/source-realized-nar-hash.txt"
           sha256sum "$source_root/flake.nix" "$source_root/flake.lock" "$package/bin/repro" "$package/bin/.repro-wrapped" "$package/libexec/reprobuild-nix-daemon" | tee "$receipt/identities.sha256"
 
       - name: Retain Linux runtime source and package identities
