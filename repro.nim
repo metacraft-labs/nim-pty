@@ -159,7 +159,10 @@ package nim_pty:
     # ``-lutil`` ``passL`` on Linux. Sufficient for the path-mode resolver
     # under ``nix develop``.
     "nim >=2.0"
-    "gcc >=12"
+    when defined(macosx):
+      "clang >=12"
+    else:
+      "gcc >=12"
 
   # Library declaration — the ``src/`` tree the tests put on ``--path`` is
   # importable when this package is consumed via ``uses: "nim_pty"``. The
@@ -223,9 +226,10 @@ package nim_pty:
         extraPassL = linuxPassL,
         extraInputs = @["src"],
         actionId = "nim_pty.test_build." & stem)
-      when defined(linux):
-        # Each typed compile must retain its already-declared C backend in
-        # the selected action tool scope; package uses alone is insufficient.
+      # Retain the genuine declared native C backend in every compile scope.
+      when defined(macosx):
+        appendRegisteredActionToolIdentityRefs(edge.action.id, ["clang"])
+      else:
         appendRegisteredActionToolIdentityRefs(edge.action.id, ["gcc"])
       buildActions.add(edge.action)
       # ``registerImplicitName = false`` because the BUILD edge already owns
