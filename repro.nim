@@ -101,6 +101,7 @@
 ## ``repro build`` refuses to run with "typed tool provisioning is required
 ## for uses declarations".
 
+import std/[os, json, strutils]
 import repro_project_dsl
 import repro_dsl_stdlib/foreign_env
 
@@ -208,6 +209,30 @@ package nim_pty:
     let ptyPool = buildPool("nim_pty.pty-serial", 1'u32)
     discard ptyPool
 
+    # Public SDK file/directory evaluation inputs preserve normal graph cache
+    # identity when a native profile is created or its actual bytes change.
+    var nativeCompilerEnv: seq[(string, string)] = @[]
+    var nativeCompilerInputs: seq[string] = @[]
+    when defined(windows) and defined(reproProviderMode):
+      providerDirectoryInput(".repro/pty-native-compiler")
+      let profilePath = ".repro/pty-native-compiler/profile.json"
+      if not fileExists(profilePath):
+        raise newException(ValueError, "Required declared native GCC profile is missing")
+      block:
+        let profile = parseJson(readDevEnvFile(profilePath))
+        if profile.kind != JObject or profile["schemaId"].getStr != "nim_pty.native-compiler-profile.v1" or
+            profile["packageId"].getStr != "gcc-winlibs@16.1.0" or
+            profile["archiveSHA256"].getStr != "62fb8588d2deee7d662dbcbd386702adbf19643764c971c38aa4839472eee232" or
+            profile["compilerSHA256"].getStr != "61faf79766e5e4f9170d1a3776ad13b4daf380d11f3d7fbaa0d94c4d71533496" or
+            profile["payloadSHA256"].getStr != "004555fc4f053cc1c7ed58594c9c71ab95c902d954b4591a618959b94759564b" or
+            profile["target"].getStr != "x86_64-w64-mingw32":
+          raise newException(ValueError, "Declared native GCC profile refused")
+        let compilerBin = profile["compilerBin"].getStr
+        if not compilerBin.isAbsolute or not dirExists(compilerBin) or not fileExists(compilerBin / "gcc.exe"):
+          raise newException(ValueError, "Declared native GCC profile path refused")
+        nativeCompilerEnv = @[("PATH", compilerBin)]
+        nativeCompilerInputs = @[profilePath]
+
     proc emitTestPair(source, binary: string;
                       buildActions, executeActions: var seq[BuildActionDef]) =
       var lastSlash = -1
@@ -224,7 +249,8 @@ package nim_pty:
         paths = @["src"],
         mm = "orc",
         extraPassL = linuxPassL,
-        extraInputs = @["src"],
+        extraInputs = @["src"] & nativeCompilerInputs,
+        extraEnv = nativeCompilerEnv,
         actionId = "nim_pty.test_build." & stem)
       # Retain the genuine declared native C backend in every compile scope.
       when defined(macosx):

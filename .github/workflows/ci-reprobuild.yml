@@ -191,6 +191,23 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Acquire official native Windows Python for compiler preparation
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/acquire-native-python.ps1 -Architecture "${{ matrix.arch }}"
+
+      - name: Build the matching released RunQuota compiler prerequisite
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_RUNQUOTA_BOOTSTRAP_TOKEN: ${{ steps.ci_token.outputs.token }}
+        run: '"$NIM_NATIVE_PYTHON" -B ci/bootstrap-windows-runquota.py'
+
+      - name: Bind the complete declared Windows x64 GCC profile to compile edges
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/acquire-windows-gcc-profile.ps1
+
       - name: repro build
         # Builds the conventional `build` collection declared in
         # `repro.nim`. Verifies the primary shipping artefact (the
@@ -268,3 +285,24 @@ jobs:
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Remove only unchanged owned compiler-preparation Python runtime
+        if: always() && runner.os == 'Windows' && matrix.arch == 'x64' && env.NIM_NATIVE_PYTHON_RECEIPT != ''
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/cleanup-native-python.ps1
+
+      - name: Retain native compiler prerequisite identities
+        if: always() && runner.os == 'Windows' && matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-native-compiler-prerequisites-${{ matrix.arch }}
+          path: |
+            .repro/native-python-acquisition-*.json
+            .repro/native-python-cleanup-*.json
+            .repro/runquota-bootstrap-*.json
+            .repro/gcc-profile-acquisition*.json
+            ${{ runner.temp }}/native-runquota-*/*.stdout
+            ${{ runner.temp }}/native-runquota-*/*.stderr
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
