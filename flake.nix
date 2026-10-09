@@ -91,6 +91,7 @@
             '';
           };
           packages.ci-receipt-python = pkgs.python3;
+          packages.ci-monitored-shell = pkgs.bash;
 
           packages.default = pkgs.stdenvNoCC.mkDerivation {
             pname = "nim-pty";

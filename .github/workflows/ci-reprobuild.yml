@@ -136,6 +136,36 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      - name: Provision declared macOS Nix shell acquisition backend
+        if: matrix.os == 'macos'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@3fcbb26dd920adf6ccc64a87c6d24797ab0b5d94
+        with:
+          gh-token: ${{ steps.ci_token.outputs.token }}
+          token-owner: metacraft-labs
+
+      - name: Bind owning non-SIP monitored shell
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          own_sha="$(git rev-parse HEAD)"
+          test "$own_sha" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          own_root="$(git rev-parse --show-toplevel)"
+          receipt_python_out="$(nix build --no-link --print-out-paths --no-update-lock-file "git+file://$own_root?rev=$own_sha&shallow=1#ci-receipt-python")"
+          test -x "$receipt_python_out/bin/python3"
+          "$receipt_python_out/bin/python3" -B ci/acquire-monitored-shell.py
+
+      - name: Retain monitored shell acquisition authority
+        if: always() && matrix.os == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-monitored-shell-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pty-monitored-shell-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: repro build
         # Builds the conventional `build` collection declared in
         # `repro.nim`. Verifies the primary shipping artefact (the
