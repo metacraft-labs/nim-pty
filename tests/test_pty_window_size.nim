@@ -43,7 +43,7 @@ suite "L1: window size round trip":
     let shellBin = requireBin("sh")
     let deadline = getMonoTime() + initDuration(seconds = 2)
     var sess = spawnPty(shellBin,
-      ["-c", "stty -echo size; IFS= read -r marker; [ \"$marker\" = resized ] || exit 7; exec stty size"],
+      ["-c", "stty -echo; stty size; IFS= read -r marker; [ \"$marker\" = resized ] || exit 7; exec stty size"],
       inheritedEnv(), SpawnOptions(cols: 80, rows: 24))
     try:
       var pending = ""
@@ -61,7 +61,8 @@ suite "L1: window size round trip":
       doAssert nextLine() == "24 80", "initial PTY geometry must precede resize"
       setWindowSize(sess, 132, 50)
       write(sess, cast[seq[byte]]("resized\n"))
-      doAssert nextLine() == "50 132", "child must observe the exact live resize"
+      let observedResize = nextLine()
+      doAssert observedResize == "50 132", "child must observe the exact live resize; observed=" & repr(observedResize)
       while isAlive(sess):
         doAssert getMonoTime() < deadline, "child did not exit within the resize transaction"
         let remaining = deadline - getMonoTime()
