@@ -196,10 +196,27 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File ci/acquire-native-python.ps1 -Architecture "${{ matrix.arch }}"
 
+      - name: Claim the exclusive released RunQuota authentication helper directory
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
+        run: '"$NIM_NATIVE_PYTHON" -B ci/qualify-actions-native-contracts.py prepare'
+
+      - name: Materialize the immutable released RunQuota authentication helpers
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
+          NIM_NATIVE_CHECKOUT_TOKEN: ${{ steps.ci_token.outputs.token }}
+          GIT_CONFIG_PARAMETERS: ${{ env.GIT_CONFIG_PARAMETERS != '' && format('{0} ', env.GIT_CONFIG_PARAMETERS) || '' }}'core.autocrlf'='false' 'core.eol'='lf' 'core.attributesfile'=''
+        run: '"$NIM_NATIVE_PYTHON" -B ci/qualify-actions-native-contracts.py checkout x64'
+
       - name: Build the matching released RunQuota compiler prerequisite
         if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: bash
         env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
           NIM_RUNQUOTA_BOOTSTRAP_TOKEN: ${{ steps.ci_token.outputs.token }}
         run: '"$NIM_NATIVE_PYTHON" -B ci/bootstrap-windows-runquota.py'
 
@@ -300,6 +317,7 @@ jobs:
             .repro/native-python-acquisition-*.json
             .repro/native-python-cleanup-*.json
             .repro/runquota-bootstrap-*.json
+            .repro/actions-native-contracts/
             .repro/gcc-profile-acquisition*.json
             ${{ runner.temp }}/native-runquota-*/*.stdout
             ${{ runner.temp }}/native-runquota-*/*.stderr
