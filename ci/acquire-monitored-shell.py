@@ -4,13 +4,17 @@ the engine prefers its shell; missing shell falls back to the declared PATH.
 Native Darwin execution and all original75 remain mandatory.
 """
 from pathlib import Path
-import os,sys,subprocess,json,hashlib,stat,tempfile,platform,struct
+import os,sys,subprocess,json,hashlib,stat,tempfile,platform,struct,shutil
 ROOT=Path.cwd();R={'success':False,'scope':__doc__}
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 def run(argv):return subprocess.check_output(argv,cwd=ROOT)
 def image(p):
  p=Path(p);q=p.resolve(strict=True);st=q.stat();assert stat.S_ISREG(st.st_mode)
  return {'lexical':str(p),'resolved':str(q),'mode':st.st_mode,'sha256':sha(q)}
+def declared_tool(name):
+ p=shutil.which(name)
+ if p is None:raise RuntimeError('Missing declared native tool: '+name)
+ return image(p)
 def directory(p):
  st=p.lstat();assert stat.S_ISDIR(st.st_mode) and not p.is_symlink()
  return [st.st_dev,st.st_ino]
@@ -49,7 +53,7 @@ assert ROOT.is_absolute() and ROOT.resolve()==ROOT
 native=platform.system();assert native=='Darwin' or os.environ.get('PTY_PRIVATE_LINUX_COMPONENT')=='1'
 gitConfiguration=run(['git','config','--null','--show-origin','--show-scope','--list'])
 before=source();originalCT=os.environ.get('CT_SANDBOX_TOOLS_DIR')
-tools={role:image(run(['which',role]).decode().strip()) for role in ['git','nix']};tools['python']=image(sys.executable)
+tools={role:declared_tool(role) for role in ['git','nix']};tools['python']=image(sys.executable)
 base=Path(os.environ['RUNNER_TEMP']).resolve(strict=True);baseID=directory(base);receipt=Path(tempfile.mkdtemp(prefix='pty-monitored-shell-',dir=base));receiptID=directory(receipt)
 command=Path(os.environ['GITHUB_PATH']);assert command.is_absolute() and not command.is_symlink(),'Foreign activation path'
 fd=None
