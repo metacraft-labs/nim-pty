@@ -80,16 +80,228 @@ jobs:
           env-flavor: reprobuild
           gh-token: ${{ steps.ci_token.outputs.token }}
 
+      - name: Provision declared Linux Nix acquisition backend
+        if: matrix.os == 'linux'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@dev
+        with:
+          gh-token: ${{ steps.ci_token.outputs.token }}
+          token-owner: metacraft-labs
+
+      - name: Bind explicit Linux Repro runtime source
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          NIX_CONFIG: access-tokens = github.com=${{ steps.ci_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          own_sha="$(git rev-parse HEAD)"
+          test "$own_sha" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          own_root="$(git rev-parse --show-toplevel)"
+          receipt_python_out="$(nix build --no-link --print-out-paths --no-update-lock-file "git+file://$own_root?rev=$own_sha&shallow=1#ci-receipt-python")"
+          test -x "$receipt_python_out/bin/python3"
+          receipt_python="$receipt_python_out/bin/python3"
+          package_json="$RUNNER_TEMP/pty-explicit-repro-package.json"
+          nix build --no-link --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d#reprobuild'  > "$package_json"
+          package="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(x[0]["outputs"]["out"])' "$package_json")"
+          receipt="$RUNNER_TEMP/pty-repro-runtime-receipt"
+          mkdir "$receipt"
+          printf '%s\n' "$receipt_python_out" > "$receipt/python-output.txt"
+          nix path-info --derivation "$receipt_python_out" > "$receipt/python-derivation.txt"
+          sha256sum "$receipt_python" > "$receipt/python-executable.sha256"
+          "$receipt_python" --version > "$receipt/python-version.txt"
+          "$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(json.dumps({"drvPath":x[0]["drvPath"],"outputs":x[0]["outputs"]},indent=2))' "$package_json" > "$receipt/package.json"
+          test -x "$package/bin/repro"
+          test -x "$package/bin/.repro-wrapped"
+          test -x "$package/libexec/reprobuild-nix-daemon"
+          printf 'REPROBUILD_REPRO=%s/bin/repro\n' "$package" >> "$GITHUB_ENV"
+          printf 'REPROBUILD_NIX_DAEMON_BIN=%s/libexec/reprobuild-nix-daemon\n' "$package" >> "$GITHUB_ENV"
+          printf '%s/bin\n' "$package" >> "$GITHUB_PATH"
+          nix flake metadata --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d' > "$RUNNER_TEMP/pty-explicit-repro-source.json"
+          "$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; print(json.dumps({"locked":x["locked"],"path":x["path"]},indent=2))' "$RUNNER_TEMP/pty-explicit-repro-source.json" > "$receipt/source.json"
+          source_root="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; print(x["path"])' "$RUNNER_TEMP/pty-explicit-repro-source.json")"
+          nix flake prefetch --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d' > "$receipt/source-prefetch.json"
+          "$receipt_python" -c 'import json,sys; metadata=json.load(open(sys.argv[1])); prefetch=json.load(open(sys.argv[2])); assert metadata["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; assert prefetch["storePath"]==metadata["path"]; assert prefetch["hash"]==metadata["locked"]["narHash"]' "$RUNNER_TEMP/pty-explicit-repro-source.json" "$receipt/source-prefetch.json"
+          nix hash path --type sha256 --sri "$source_root" > "$receipt/source-realized-nar-hash.txt"
+          "$receipt_python" -c 'import json,sys; metadata=json.load(open(sys.argv[1])); assert open(sys.argv[2]).read().strip()==metadata["locked"]["narHash"]' "$RUNNER_TEMP/pty-explicit-repro-source.json" "$receipt/source-realized-nar-hash.txt"
+          sha256sum "$source_root/flake.nix" "$source_root/flake.lock" "$package/bin/repro" "$package/bin/.repro-wrapped" "$package/libexec/reprobuild-nix-daemon" | tee "$receipt/identities.sha256"
+
+      - name: Retain Linux runtime source and package identities
+        if: always() && matrix.os == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-repro-runtime-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pty-repro-runtime-receipt/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Provision declared macOS Nix shell acquisition backend
+        if: matrix.os == 'macos'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@3fcbb26dd920adf6ccc64a87c6d24797ab0b5d94
+        with:
+          gh-token: ${{ steps.ci_token.outputs.token }}
+          token-owner: metacraft-labs
+
+      - name: Bind owning non-SIP monitored shell
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          own_sha="$(git rev-parse HEAD)"
+          test "$own_sha" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          own_root="$(git rev-parse --show-toplevel)"
+          receipt_python_out="$(nix build --no-link --print-out-paths --no-update-lock-file "git+file://$own_root?rev=$own_sha&shallow=1#ci-receipt-python")"
+          test -x "$receipt_python_out/bin/python3"
+          "$receipt_python_out/bin/python3" -B ci/acquire-monitored-shell.py
+
+      - name: Retain monitored shell acquisition authority
+        if: always() && matrix.os == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-monitored-shell-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pty-monitored-shell-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Bind declared macOS Repro runtime companion
+        if: matrix.os == 'macos'
+        shell: bash
+        env:
+          NIX_CONFIG: access-tokens = github.com=${{ steps.ci_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          own_sha="$(git rev-parse HEAD)"
+          test "$own_sha" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          own_root="$(git rev-parse --show-toplevel)"
+          receipt_python_out="$(nix build --no-link --print-out-paths --no-update-lock-file "git+file://$own_root?rev=$own_sha&shallow=1#ci-receipt-python")"
+          test -x "$receipt_python_out/bin/python3"
+          "$receipt_python_out/bin/python3" -B ci/acquire-darwin-repro-companion.py
+
+      - name: Retain macOS Repro runtime companion authority
+        if: always() && matrix.os == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-macos-repro-runtime-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pty-macos-repro-runtime-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Acquire official native Windows Python for compiler preparation
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/acquire-native-python.ps1 -Architecture "${{ matrix.arch }}"
+
+      - name: Claim the exclusive released RunQuota authentication helper directory
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
+        run: '"$NIM_NATIVE_PYTHON" -B ci/qualify-actions-native-contracts.py prepare'
+
+      - name: Materialize the immutable released RunQuota authentication helpers
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
+          NIM_NATIVE_CHECKOUT_TOKEN: ${{ steps.ci_token.outputs.token }}
+          GIT_CONFIG_PARAMETERS: ${{ env.GIT_CONFIG_PARAMETERS != '' && format('{0} ', env.GIT_CONFIG_PARAMETERS) || '' }}'core.autocrlf'='false' 'core.eol'='lf' 'core.attributesfile'=''
+        run: '"$NIM_NATIVE_PYTHON" -B ci/qualify-actions-native-contracts.py checkout x64'
+
+      - name: Build the matching released RunQuota compiler prerequisite
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
+          NIM_RUNQUOTA_BOOTSTRAP_TOKEN: ${{ steps.ci_token.outputs.token }}
+        run: '"$NIM_NATIVE_PYTHON" -B ci/bootstrap-windows-runquota.py'
+
+      - name: Bind the complete declared Windows x64 GCC profile to compile edges
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/acquire-windows-gcc-profile.ps1
+
       - name: repro build
         # Builds the conventional `build` collection declared in
         # `repro.nim`. Verifies the primary shipping artefact (the
         # recorder binary or extension) materialises through the
         # reprobuild engine identically to `just build`.
+        if: matrix.os != 'linux'
         run: dev-exec repro build
+
+      - name: Mint current installation token for Linux build resolution
+        if: matrix.os == 'linux'
+        id: linux_build_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      - name: repro build (explicit Linux runtime)
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
+          PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_build_token.outputs.token }}
+        run: |
+          test -n "$PTY_CURRENT_NIX_TOKEN"
+          [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          [[ ! "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
+          # Replace only the mapping installed by setup; keep every other byte.
+          [[ "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
+          pty_boundary="${BASH_REMATCH[1]}"
+          pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
+          pty_remaining="${NIX_CONFIG#*"$pty_mapping"}"
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]]
+          export NIX_CONFIG="${NIX_CONFIG/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}
+          extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
+          unset pty_boundary pty_mapping pty_remaining
+          cd "$GITHUB_WORKSPACE"
+          test -f repro.nim
+          "$REPROBUILD_REPRO" build --daemon=off --tool-provisioning=path
 
       - name: repro test
         # Materialises the `test` collection.
+        if: matrix.os != 'linux'
         run: dev-exec repro test
+
+      - name: Mint current installation token for Linux test resolution
+        if: matrix.os == 'linux'
+        id: linux_test_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      - name: repro test (explicit Linux runtime)
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
+          PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_test_token.outputs.token }}
+        run: |
+          test -n "$PTY_CURRENT_NIX_TOKEN"
+          [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          [[ ! "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
+          # Replace only the mapping installed by setup; keep every other byte.
+          [[ "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
+          pty_boundary="${BASH_REMATCH[1]}"
+          pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
+          pty_remaining="${NIX_CONFIG#*"$pty_mapping"}"
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]]
+          export NIX_CONFIG="${NIX_CONFIG/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}
+          extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
+          unset pty_boundary pty_mapping pty_remaining
+          cd "$GITHUB_WORKSPACE"
+          "$REPROBUILD_REPRO" test --daemon=off --tool-provisioning=path
 
       - name: just build (cross-check)
         # Re-runs the legacy `just build` path inside the same env so
@@ -140,3 +352,25 @@ jobs:
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Remove only unchanged owned compiler-preparation Python runtime
+        if: always() && runner.os == 'Windows' && matrix.arch == 'x64' && env.NIM_NATIVE_PYTHON_RECEIPT != ''
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/cleanup-native-python.ps1
+
+      - name: Retain native compiler prerequisite identities
+        if: always() && runner.os == 'Windows' && matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-native-compiler-prerequisites-${{ matrix.arch }}
+          path: |
+            .repro/native-python-acquisition-*.json
+            .repro/native-python-cleanup-*.json
+            .repro/runquota-bootstrap-*.json
+            .repro/actions-native-contracts/
+            .repro/gcc-profile-acquisition*.json
+            ${{ runner.temp }}/native-runquota-*/*.stdout
+            ${{ runner.temp }}/native-runquota-*/*.stderr
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

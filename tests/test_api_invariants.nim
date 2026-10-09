@@ -28,7 +28,7 @@ suite "L1: API invariants":
     # If this test prints anything at all, stdio is fine.
     block:
       var h: PtyHandle = default(PtyHandle)
-      check h.fd == 0
+      check fileDescriptor(h) == 0
     # If destruction had closed fd 0, subsequent stdio I/O would fail; the
     # echo below proves it didn't.
     discard
@@ -65,5 +65,9 @@ suite "L1: API invariants":
     # destructor signature in posix.nim takes a value (not ref); the
     # mismatch would surface elsewhere. We document the expectation here.
     var h: PtyHandle = default(PtyHandle)
-    check h.fd == 0
+    check fileDescriptor(h) == 0
+    when defined(windows):
+      check (h.handle is SomeInteger)
+    else:
+      check (h.fd is SomeInteger)
     check (not h.closed)
