@@ -233,10 +233,35 @@ jobs:
         if: matrix.os != 'linux'
         run: dev-exec repro build
 
+      - name: Mint current installation token for Linux build resolution
+        if: matrix.os == 'linux'
+        id: linux_build_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
       - name: repro build (explicit Linux runtime)
         if: matrix.os == 'linux'
         shell: bash
+        env:
+          PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
+          PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_build_token.outputs.token }}
         run: |
+          test -n "$PTY_CURRENT_NIX_TOKEN"
+          [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          [[ ! "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
+          # Replace only the mapping installed by setup; keep every other byte.
+          [[ "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
+          pty_boundary="${BASH_REMATCH[1]}"
+          pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
+          pty_remaining="${NIX_CONFIG#*"$pty_mapping"}"
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]]
+          export NIX_CONFIG="${NIX_CONFIG/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}
+          extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
+          unset pty_boundary pty_mapping pty_remaining
           cd "$GITHUB_WORKSPACE"
           test -f repro.nim
           "$REPROBUILD_REPRO" build --daemon=off --tool-provisioning=path
@@ -246,10 +271,35 @@ jobs:
         if: matrix.os != 'linux'
         run: dev-exec repro test
 
+      - name: Mint current installation token for Linux test resolution
+        if: matrix.os == 'linux'
+        id: linux_test_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
       - name: repro test (explicit Linux runtime)
         if: matrix.os == 'linux'
         shell: bash
+        env:
+          PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
+          PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_test_token.outputs.token }}
         run: |
+          test -n "$PTY_CURRENT_NIX_TOKEN"
+          [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          [[ ! "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
+          # Replace only the mapping installed by setup; keep every other byte.
+          [[ "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
+          pty_boundary="${BASH_REMATCH[1]}"
+          pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
+          pty_remaining="${NIX_CONFIG#*"$pty_mapping"}"
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]]
+          export NIX_CONFIG="${NIX_CONFIG/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}
+          extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
+          unset pty_boundary pty_mapping pty_remaining
           cd "$GITHUB_WORKSPACE"
           "$REPROBUILD_REPRO" test --daemon=off --tool-provisioning=path
 
