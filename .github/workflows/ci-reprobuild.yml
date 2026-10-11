@@ -71,6 +71,13 @@ jobs:
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
           owner: metacraft-labs
 
+      - name: Install the release authenticated by the RunQuota bootstrap policy
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        uses: metacraft-labs/metacraft-github-actions/setup-reprobuild@58da84d5af27408ca598ce69caa83b133e054592
+        with:
+          from-source: 'false'
+          repro-version: v0.2.6
+
       - name: Setup dev env (reprobuild flavor)
         # setup-dev-env clones the siblings listed in .github/sibling-repos
         # (codetracer-trace-format, codetracer-trace-format-nim) at the
@@ -249,27 +256,27 @@ jobs:
           PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
           PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_build_token.outputs.token }}
         run: |
-          test -n "$PTY_CURRENT_NIX_TOKEN"
-          [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
-          [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          test -n "$PTY_CURRENT_NIX_TOKEN" || { echo "::error::PTY Nix credential prerequisite refused: current-token-empty" >&2; exit 1; }
+          [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]] || { echo "::error::PTY Nix credential prerequisite refused: current-token-format" >&2; exit 1; }
+          [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]] || { echo "::error::PTY Nix credential prerequisite refused: public-token-format" >&2; exit 1; }
           if [[ "${NIX_CONFIG-}" =~ (^|[[:space:]=])github[.]com=([^[:space:]]+)($|[[:space:]]) ]]; then
             pty_inherited_boundary="${BASH_REMATCH[1]}"
             pty_inherited_token="${BASH_REMATCH[2]}"
-            [[ "$pty_inherited_token" =~ ^[[:alnum:]_]+$ ]]
+            [[ "$pty_inherited_token" =~ ^[[:alnum:]_]+$ ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-token-format" >&2; exit 1; }
             pty_inherited_mapping="${pty_inherited_boundary}github.com=$pty_inherited_token"
             pty_inherited_remaining="${NIX_CONFIG#*"$pty_inherited_mapping"}"
-            [[ ! "$pty_inherited_remaining" =~ (^|[[:space:]=])github[.]com= ]]
+            [[ ! "$pty_inherited_remaining" =~ (^|[[:space:]=])github[.]com= ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-github-duplicate" >&2; exit 1; }
             unset pty_inherited_boundary pty_inherited_token pty_inherited_mapping pty_inherited_remaining
           fi
           # Setup may install nix.conf without exporting NIX_CONFIG.
           # Capture effective mappings in memory; never log credential values.
-          pty_access_tokens="$(nix config show access-tokens)"
-          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
-          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
+          pty_access_tokens="$(nix config show access-tokens 2>/dev/null)" || { echo "::error::PTY Nix credential prerequisite refused: effective-config-query" >&2; exit 1; }
+          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-owner-prefix-present" >&2; exit 1; }
+          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-missing-or-invalid" >&2; exit 1; }
           pty_boundary="${BASH_REMATCH[1]}"
           pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
           pty_remaining="${pty_access_tokens#*"$pty_mapping"}"
-          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]]
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-duplicate" >&2; exit 1; }
           pty_access_tokens="${pty_access_tokens/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}"
           export NIX_CONFIG="${NIX_CONFIG-}
           access-tokens = $pty_access_tokens
@@ -300,27 +307,27 @@ jobs:
           PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
           PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_test_token.outputs.token }}
         run: |
-          test -n "$PTY_CURRENT_NIX_TOKEN"
-          [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
-          [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
+          test -n "$PTY_CURRENT_NIX_TOKEN" || { echo "::error::PTY Nix credential prerequisite refused: current-token-empty" >&2; exit 1; }
+          [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]] || { echo "::error::PTY Nix credential prerequisite refused: current-token-format" >&2; exit 1; }
+          [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]] || { echo "::error::PTY Nix credential prerequisite refused: public-token-format" >&2; exit 1; }
           if [[ "${NIX_CONFIG-}" =~ (^|[[:space:]=])github[.]com=([^[:space:]]+)($|[[:space:]]) ]]; then
             pty_inherited_boundary="${BASH_REMATCH[1]}"
             pty_inherited_token="${BASH_REMATCH[2]}"
-            [[ "$pty_inherited_token" =~ ^[[:alnum:]_]+$ ]]
+            [[ "$pty_inherited_token" =~ ^[[:alnum:]_]+$ ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-token-format" >&2; exit 1; }
             pty_inherited_mapping="${pty_inherited_boundary}github.com=$pty_inherited_token"
             pty_inherited_remaining="${NIX_CONFIG#*"$pty_inherited_mapping"}"
-            [[ ! "$pty_inherited_remaining" =~ (^|[[:space:]=])github[.]com= ]]
+            [[ ! "$pty_inherited_remaining" =~ (^|[[:space:]=])github[.]com= ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-github-duplicate" >&2; exit 1; }
             unset pty_inherited_boundary pty_inherited_token pty_inherited_mapping pty_inherited_remaining
           fi
           # Setup may install nix.conf without exporting NIX_CONFIG.
           # Capture effective mappings in memory; never log credential values.
-          pty_access_tokens="$(nix config show access-tokens)"
-          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
-          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
+          pty_access_tokens="$(nix config show access-tokens 2>/dev/null)" || { echo "::error::PTY Nix credential prerequisite refused: effective-config-query" >&2; exit 1; }
+          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-owner-prefix-present" >&2; exit 1; }
+          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-missing-or-invalid" >&2; exit 1; }
           pty_boundary="${BASH_REMATCH[1]}"
           pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
           pty_remaining="${pty_access_tokens#*"$pty_mapping"}"
-          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]]
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-duplicate" >&2; exit 1; }
           pty_access_tokens="${pty_access_tokens/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}"
           export NIX_CONFIG="${NIX_CONFIG-}
           access-tokens = $pty_access_tokens
