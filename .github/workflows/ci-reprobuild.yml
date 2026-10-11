@@ -252,16 +252,29 @@ jobs:
           test -n "$PTY_CURRENT_NIX_TOKEN"
           [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
           [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
-          [[ ! "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
-          # Replace only the mapping installed by setup; keep every other byte.
-          [[ "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
+          if [[ "${NIX_CONFIG-}" =~ (^|[[:space:]=])github[.]com=([^[:space:]]+)($|[[:space:]]) ]]; then
+            pty_inherited_boundary="${BASH_REMATCH[1]}"
+            pty_inherited_token="${BASH_REMATCH[2]}"
+            [[ "$pty_inherited_token" =~ ^[[:alnum:]_]+$ ]]
+            pty_inherited_mapping="${pty_inherited_boundary}github.com=$pty_inherited_token"
+            pty_inherited_remaining="${NIX_CONFIG#*"$pty_inherited_mapping"}"
+            [[ ! "$pty_inherited_remaining" =~ (^|[[:space:]=])github[.]com= ]]
+            unset pty_inherited_boundary pty_inherited_token pty_inherited_mapping pty_inherited_remaining
+          fi
+          # Setup may install nix.conf without exporting NIX_CONFIG.
+          # Capture effective mappings in memory; never log credential values.
+          pty_access_tokens="$(nix config show access-tokens)"
+          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
+          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
           pty_boundary="${BASH_REMATCH[1]}"
           pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
-          pty_remaining="${NIX_CONFIG#*"$pty_mapping"}"
+          pty_remaining="${pty_access_tokens#*"$pty_mapping"}"
           [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]]
-          export NIX_CONFIG="${NIX_CONFIG/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}
+          pty_access_tokens="${pty_access_tokens/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}"
+          export NIX_CONFIG="${NIX_CONFIG-}
+          access-tokens = $pty_access_tokens
           extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
-          unset pty_boundary pty_mapping pty_remaining
+          unset pty_access_tokens pty_boundary pty_mapping pty_remaining
           cd "$GITHUB_WORKSPACE"
           test -f repro.nim
           "$REPROBUILD_REPRO" build --daemon=off --tool-provisioning=path
@@ -290,16 +303,29 @@ jobs:
           test -n "$PTY_CURRENT_NIX_TOKEN"
           [[ "$PTY_CURRENT_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
           [[ "$PTY_PUBLIC_NIX_TOKEN" =~ ^[[:alnum:]_]+$ ]]
-          [[ ! "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
-          # Replace only the mapping installed by setup; keep every other byte.
-          [[ "${NIX_CONFIG-}" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
+          if [[ "${NIX_CONFIG-}" =~ (^|[[:space:]=])github[.]com=([^[:space:]]+)($|[[:space:]]) ]]; then
+            pty_inherited_boundary="${BASH_REMATCH[1]}"
+            pty_inherited_token="${BASH_REMATCH[2]}"
+            [[ "$pty_inherited_token" =~ ^[[:alnum:]_]+$ ]]
+            pty_inherited_mapping="${pty_inherited_boundary}github.com=$pty_inherited_token"
+            pty_inherited_remaining="${NIX_CONFIG#*"$pty_inherited_mapping"}"
+            [[ ! "$pty_inherited_remaining" =~ (^|[[:space:]=])github[.]com= ]]
+            unset pty_inherited_boundary pty_inherited_token pty_inherited_mapping pty_inherited_remaining
+          fi
+          # Setup may install nix.conf without exporting NIX_CONFIG.
+          # Capture effective mappings in memory; never log credential values.
+          pty_access_tokens="$(nix config show access-tokens)"
+          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]]
+          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([[:alnum:]_]+)($|[[:space:]]) ]]
           pty_boundary="${BASH_REMATCH[1]}"
           pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
-          pty_remaining="${NIX_CONFIG#*"$pty_mapping"}"
+          pty_remaining="${pty_access_tokens#*"$pty_mapping"}"
           [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]]
-          export NIX_CONFIG="${NIX_CONFIG/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}
+          pty_access_tokens="${pty_access_tokens/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}"
+          export NIX_CONFIG="${NIX_CONFIG-}
+          access-tokens = $pty_access_tokens
           extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
-          unset pty_boundary pty_mapping pty_remaining
+          unset pty_access_tokens pty_boundary pty_mapping pty_remaining
           cd "$GITHUB_WORKSPACE"
           "$REPROBUILD_REPRO" test --daemon=off --tool-provisioning=path
 
