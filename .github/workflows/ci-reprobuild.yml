@@ -85,6 +85,7 @@ jobs:
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:
           env-flavor: reprobuild
+          repro-build-pin: 76659f5730ecf698b1963c656494d2cb66eb256d
           gh-token: ${{ steps.ci_token.outputs.token }}
 
       - name: Provision declared Linux Nix acquisition backend
