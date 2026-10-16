@@ -239,7 +239,12 @@ jobs:
         # recorder binary or extension) materialises through the
         # reprobuild engine identically to `just build`.
         if: matrix.os != 'linux'
-        run: dev-exec repro build
+        id: repro_build
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const capture = require('./ci/capture-repro-command.cjs');
+            await capture({ core, exec, collection: 'build' });
 
       - name: Mint current installation token for Linux build resolution
         if: matrix.os == 'linux'
@@ -298,7 +303,12 @@ jobs:
       - name: repro test
         # Materialises the `test` collection.
         if: matrix.os != 'linux'
-        run: dev-exec repro test
+        id: repro_test
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const capture = require('./ci/capture-repro-command.cjs');
+            await capture({ core, exec, collection: 'test' });
 
       - name: Mint current installation token for Linux test resolution
         if: matrix.os == 'linux'
@@ -512,6 +522,18 @@ jobs:
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Retain outer Repro command diagnostics
+        if: always() && (steps.repro_build.outputs.diagnostics != '' || steps.repro_test.outputs.diagnostics != '')
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-command-output-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ steps.repro_build.outputs.diagnostics }}
+            ${{ steps.repro_test.outputs.diagnostics }}
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Remove only unchanged owned compiler-preparation Python runtime
         if: always() && runner.os == 'Windows' && matrix.arch == 'x64' && env.NIM_NATIVE_PYTHON_RECEIPT != ''
