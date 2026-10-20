@@ -610,6 +610,11 @@ jobs:
             .repro/runquota-bootstrap-*.json
             .repro/actions-native-contracts/
             .repro/gcc-profile-acquisition*.json
+            .repro/gcc-profile-streams-*/graph.stderr.log
+            .github/compiler-acquisition/.repro/build/*/build-failure-report.json
+            .github/compiler-acquisition/.repro/build/*/build-engine-cache/actions/*.stdout.log
+            .github/compiler-acquisition/.repro/build/*/build-engine-cache/actions/*.stderr.log
+            .github/compiler-acquisition/.repro/build/*/build-engine-cache/runquota-results/*.json
             ${{ runner.temp }}/native-runquota-*/*.stdout
             ${{ runner.temp }}/native-runquota-*/*.stderr
           include-hidden-files: true

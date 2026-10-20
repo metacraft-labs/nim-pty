@@ -188,9 +188,29 @@ function Acquire-DeclaredGcc {
   $profileRootHold=[NativePythonOwnedPath]::new($selectorRoot,$false)
   $selectorIdentity=$profileRootHold.Identity()
   $selectorFile=Join-Path $selectorRoot 'profile.json'
+  $streamId=[Guid]::NewGuid().ToString('N')
+  $streamRoot=Join-Path $root ('.repro/gcc-profile-streams-'+$streamId)
+  $null=New-Item -ItemType Directory -Path $streamRoot -ErrorAction Stop
+  $streamRoot=Checked-Directory $streamRoot
+  $graphStdout=Join-Path $streamRoot 'graph.stdout.private'
+  $graphStderr=Join-Path $streamRoot 'graph.stderr.log'
+  $graphStart=[DateTime]::UtcNow.ToString('o')
+  $graphExit=$null
+  $null=Write-AcquisitionAttempt $root ([ordered]@{scope='graph invocation started; raw stdout private and not uploaded';startedUTC=$graphStart;publicCLI=$publicBefore;argv=@('graph','profile','--json','--tool-provisioning=tarball');stdout=$graphStdout;stderr=$graphStderr})
   Push-Location -LiteralPath $acquisitionRoot
-  try { $raw = & $public graph profile --json --tool-provisioning=tarball; $graphExit=$LASTEXITCODE } finally { Pop-Location }
+  try {
+    & $public graph profile --json --tool-provisioning=tarball 1> $graphStdout 2> $graphStderr
+    $graphExit=$LASTEXITCODE
+  } finally {
+    Pop-Location
+    $streams=[ordered]@{}
+    foreach($pair in @(@('stdout',$graphStdout),@('stderr',$graphStderr))) {
+      if(Test-Path -LiteralPath $pair[1]){$streams[$pair[0]]=Regular-File $pair[1]}
+    }
+    $null=Write-AcquisitionAttempt $root ([ordered]@{scope='graph invocation completion metadata only; no environment or raw graph';startedUTC=$graphStart;finishedUTC=[DateTime]::UtcNow.ToString('o');exitCode=$graphExit;streams=$streams;publicCLI=$publicBefore})
+  }
   if($graphExit -ne 0){throw 'Declared tarball graph acquisition failed'}
+  $raw=Get-Content -LiteralPath $graphStdout -Raw
   $graph=($raw -join "`n") | ConvertFrom-Json
   $inspection=Regular-File $graph.toolInspectionPath
   $payload=Get-Content -LiteralPath $inspection.path -Raw | ConvertFrom-Json
