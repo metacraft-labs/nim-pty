@@ -280,6 +280,8 @@ jobs:
 
       - name: Bind the complete declared Windows x64 GCC profile to compile edges
         if: runner.os == 'Windows' && matrix.arch == 'x64'
+        # Provisioning backstop only; original product-test budgets are unchanged.
+        timeout-minutes: 15
         shell: pwsh
         run: pwsh -NoProfile -File ci/acquire-windows-gcc-profile.ps1
 

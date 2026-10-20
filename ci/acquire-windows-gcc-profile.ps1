@@ -155,7 +155,7 @@ function Acquire-DeclaredGcc {
   $top=@(& $git rev-parse --show-toplevel);if($LASTEXITCODE -ne 0 -or $top.Count -ne 1 -or [IO.Path]::GetFullPath($top[0]) -ine [IO.Path]::GetFullPath($root)){throw 'Foreign owning toplevel refused'}
   if($ownBefore.head -cne $env:GITHUB_SHA){throw 'Foreign owning event refused'}
   $status=@(& $git status --porcelain=v1 --untracked-files=no);if($LASTEXITCODE -ne 0 -or $status.Count -ne 0){throw 'Dirty owning source refused'}
-  $helperHold=$null;$pathHold=$null;$profileRootHold=$null;$profileHold=$null;$primaryError=$null
+  $helperHold=$null;$graphLauncherHold=$null;$pathHold=$null;$profileRootHold=$null;$profileHold=$null;$primaryError=$null
   try {
   # Evaluate only bytes captured from a held regular helper image.
   $helperFile=Regular-File (Join-Path $PSScriptRoot 'native-python-owned-path.ps1')
@@ -164,6 +164,12 @@ function Acquire-DeclaredGcc {
   $helperBytes=$helperBuffer.ToArray();$helperBuffer.Dispose()
   if([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($helperBytes)).ToLowerInvariant() -cne $helperFile.sha256){$helperHold.Dispose();throw 'Changed held identity helper'}
   . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($helperBytes)))
+  $graphLauncher=Regular-File (Join-Path $PSScriptRoot 'owned-graph-command.ps1')
+  $graphLauncherHold=[IO.File]::Open($graphLauncher.path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+  $graphLauncherBuffer=[IO.MemoryStream]::new()
+  try{$graphLauncherHold.CopyTo($graphLauncherBuffer);$graphLauncherBytes=$graphLauncherBuffer.ToArray()}finally{$graphLauncherBuffer.Dispose()}
+  if([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($graphLauncherBytes)).ToLowerInvariant() -cne $graphLauncher.sha256){throw 'Changed held graph launcher source'}
+  . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($graphLauncherBytes)))
   $pathFile=Regular-File $env:GITHUB_ENV
   $pathHold=[IO.File]::Open($pathFile.path,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
   $pathIdentity=Get-NativeIdentity $pathFile.path
@@ -195,20 +201,24 @@ function Acquire-DeclaredGcc {
   $graphStdout=Join-Path $streamRoot 'graph.stdout.private'
   $graphStderr=Join-Path $streamRoot 'graph.stderr.log'
   $graphStart=[DateTime]::UtcNow.ToString('o')
-  $graphExit=$null
+  $graphExit=$null;$graphInvocation=$null
+  $null=Write-AcquisitionAttempt $root ([ordered]@{scope='native graph job controls started; product actions unexecuted';launcher=$graphLauncher})
+  $graphControls=Test-PtyOwnedGraphCommand (Join-Path $streamRoot 'controls')
+  $null=Write-AcquisitionAttempt $root ([ordered]@{scope='native graph job controls; root waits and observed job accounting only';launcher=$graphLauncher;controls=$graphControls})
   $null=Write-AcquisitionAttempt $root ([ordered]@{scope='graph invocation started; raw stdout private and not uploaded';startedUTC=$graphStart;publicCLI=$publicBefore;argv=@('graph','profile','--json','--tool-provisioning=tarball');stdout=$graphStdout;stderr=$graphStderr})
   Push-Location -LiteralPath $acquisitionRoot
   try {
-    & $public graph profile --json --tool-provisioning=tarball 1> $graphStdout 2> $graphStderr
-    $graphExit=$LASTEXITCODE
+    $graphInvocation=Invoke-PtyOwnedGraphCommand -Image $public -Directory $acquisitionRoot -Stdout $graphStdout -Stderr $graphStderr
+    $graphExit=$graphInvocation.ExitCode
   } finally {
     Pop-Location
     $streams=[ordered]@{}
     foreach($pair in @(@('stdout',$graphStdout),@('stderr',$graphStderr))) {
       if(Test-Path -LiteralPath $pair[1]){$streams[$pair[0]]=Regular-File $pair[1]}
     }
-    $null=Write-AcquisitionAttempt $root ([ordered]@{scope='graph invocation completion metadata only; no environment or raw graph';startedUTC=$graphStart;finishedUTC=[DateTime]::UtcNow.ToString('o');exitCode=$graphExit;streams=$streams;publicCLI=$publicBefore})
+    $null=Write-AcquisitionAttempt $root ([ordered]@{scope='graph invocation completion metadata only; no environment or raw graph';startedUTC=$graphStart;finishedUTC=[DateTime]::UtcNow.ToString('o');exitCode=$graphExit;streams=$streams;publicCLI=$publicBefore;ownedJobObservation=$graphInvocation;graphDeadlineMilliseconds=600000;cleanupDeadlineMilliseconds=30000})
   }
+  if($graphInvocation.TimedOut){throw 'Declared tarball graph prerequisite exceeded its finite deadline; product actions unexecuted'}
   if($graphExit -ne 0){throw 'Declared tarball graph acquisition failed'}
   $raw=Get-Content -LiteralPath $graphStdout -Raw
   $graph=($raw -join "`n") | ConvertFrom-Json
@@ -246,8 +256,15 @@ function Acquire-DeclaredGcc {
   $profileHold=[IO.File]::Open($selectorFile,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
   $profileHold.Write($selectorBytes,0,$selectorBytes.Length);$profileHold.Flush($true)
   $selectorFileIdentity=Get-NativeIdentity $selectorFile
+  $profileHold.Dispose();$profileHold=$null
+  $profileHold=[IO.File]::Open($selectorFile,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+  $selectorBuffer=[IO.MemoryStream]::new()
+  try{$profileHold.CopyTo($selectorBuffer);$heldSelectorBytes=$selectorBuffer.ToArray();$profileHold.Position=0}finally{$selectorBuffer.Dispose()}
+  if((Get-NativeIdentity $selectorFile) -cne $selectorFileIdentity -or [Convert]::ToBase64String($heldSelectorBytes) -cne [Convert]::ToBase64String($selectorBytes)){throw 'Changed reopened held selector'}
   if((Get-NativeIdentity $selectorRoot) -cne $selectorIdentity -or [Convert]::ToBase64String([IO.File]::ReadAllBytes($selectorFile)) -cne [Convert]::ToBase64String($selectorBytes)){throw 'Changed native compiler selector bytes'}
-  if(-not ([Convert]::ToBase64String($pathBefore) -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($pathFile.path)))){throw "GITHUB_ENV changed before activation"}
+  $beforeAppend=[IO.MemoryStream]::new()
+  try{$pathHold.Position=0;$pathHold.CopyTo($beforeAppend);$heldBeforeAppend=$beforeAppend.ToArray()}finally{$beforeAppend.Dispose()}
+  if(-not ([Convert]::ToBase64String($pathBefore) -ceq [Convert]::ToBase64String($heldBeforeAppend))){throw "GITHUB_ENV changed before activation"}
   if((Get-NativeIdentity $pathFile.path) -cne $pathIdentity){throw 'Changed activation inode'}
   $pathHold.Seek(0,[IO.SeekOrigin]::End)|Out-Null
   $bytes=[Text.Encoding]::UTF8.GetBytes("NIM_PTY_WINDOWS_GCC_BIN="+(Split-Path $bound.executable.path -Parent)+"`n")
@@ -263,10 +280,10 @@ function Acquire-DeclaredGcc {
   if($selectorEntries.Count -ne 1 -or $selectorEntries[0].Name -cne 'profile.json' -or $selectorEntries[0].PSIsContainer -or ($selectorEntries[0].Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Unknown native compiler selector membership'}
   Write-Output "Declared GCC acquisition receipt: $out"
   } catch { $primaryError=$_;throw } finally {
-    if($profileHold){$profileHold.Dispose()};if($profileRootHold){$profileRootHold.Dispose()};if($pathHold){$pathHold.Dispose()};if($helperHold){$helperHold.Dispose()}
+    if($profileHold){$profileHold.Dispose()};if($profileRootHold){$profileRootHold.Dispose()};if($pathHold){$pathHold.Dispose()};if($helperHold){$helperHold.Dispose()};if($graphLauncherHold){$graphLauncherHold.Dispose()}
     try {
     $finalOwn=Freeze-Owning $root $git
-    if(($ownBefore|ConvertTo-Json -Depth 6 -Compress) -cne ($finalOwn|ConvertTo-Json -Depth 6 -Compress) -or (Regular-File $git).sha256 -cne $gitBefore.sha256 -or (Regular-File $public).sha256 -cne $publicBefore.sha256 -or (Regular-File $PSCommandPath).sha256 -cne $scriptBefore.sha256){throw 'Acquisition final source/principal guard refused'}
+    if(($ownBefore|ConvertTo-Json -Depth 6 -Compress) -cne ($finalOwn|ConvertTo-Json -Depth 6 -Compress) -or (Regular-File $git).sha256 -cne $gitBefore.sha256 -or (Regular-File $public).sha256 -cne $publicBefore.sha256 -or (Regular-File $PSCommandPath).sha256 -cne $scriptBefore.sha256 -or (Regular-File $graphLauncher.path).sha256 -cne $graphLauncher.sha256){throw 'Acquisition final source/principal guard refused'}
     } catch { if($null -eq $primaryError){throw};Write-Warning 'Final guard also refused; original acquisition error retained' }
   }
 }
