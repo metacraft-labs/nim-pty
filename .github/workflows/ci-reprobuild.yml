@@ -102,7 +102,19 @@ jobs:
           test -x "$receipt_python_out/bin/python3"
           receipt_python="$receipt_python_out/bin/python3"
           package_json="$RUNNER_TEMP/pty-explicit-repro-package.json"
-          nix build --no-link --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d#reprobuild'  > "$package_json"
+          acquisition_resources="$(mktemp -d "$RUNNER_TEMP/pty-acquisition-resources.XXXXXXXXXX")"
+          printf 'acquisition_resources=%s\n' "$acquisition_resources" >> "$GITHUB_OUTPUT"
+          # Diagnostics are secondary: preserve the acquisition's actual exit,
+          # including when resource metadata is unavailable in a VM namespace.
+          "$receipt_python" ci/capture-linux-acquisition-resources.py "$acquisition_resources/before.json" || printf 'before snapshot unavailable\n' >&2
+          if nix build --no-link --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d#reprobuild' > "$package_json"; then
+            acquisition_exit=0
+          else
+            acquisition_exit=$?
+          fi
+          printf '{"exitCode":%s}\n' "$acquisition_exit" > "$acquisition_resources/exit.json" || printf 'exit receipt unavailable\n' >&2
+          "$receipt_python" ci/capture-linux-acquisition-resources.py "$acquisition_resources/after.json" || printf 'after snapshot unavailable\n' >&2
+          test "$acquisition_exit" -eq 0 || exit "$acquisition_exit"
           package="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(x[0]["outputs"]["out"])' "$package_json")"
           # A self-hosted runner may retain receipts from earlier jobs. Allocate
           # exclusively and export this job's path without touching prior evidence.
@@ -559,6 +571,15 @@ jobs:
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Retain Linux acquisition resource evidence
+        if: always() && matrix.os == 'linux' && steps.linux_runtime.outputs.acquisition_resources != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-acquisition-resources-${{ matrix.arch }}
+          path: ${{ steps.linux_runtime.outputs.acquisition_resources }}
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Retain outer Repro command diagnostics
         if: always() && (steps.repro_build.outputs.diagnostics != '' || steps.repro_test.outputs.diagnostics != '')
