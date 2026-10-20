@@ -149,7 +149,8 @@ jobs:
           runquota_package="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(x[0]["outputs"]["out"])' "$receipt/runquota-package-raw.json")"
           runquota_drv="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(x[0]["drvPath"])' "$receipt/runquota-package-raw.json")"
           nix derivation show "$runquota_drv" > "$receipt/runquota-derivation-raw.json"
-          runquota_drv_source="$("$receipt_python" -c 'import json,sys; from pathlib import PurePosixPath; x=json.load(open(sys.argv[1])); assert len(x)==1; d=next(iter(x.values())); assert d["system"]==sys.argv[3]; assert d["outputs"]["out"]["path"] in (sys.argv[2],PurePosixPath(sys.argv[2]).name); print(d["env"]["src"])' "$receipt/runquota-derivation-raw.json" "$runquota_package" "$runtime_system")"
+          "$receipt_python" -B -m unittest discover -s ci -p test_nix_derivation_source.py
+          runquota_drv_source="$("$receipt_python" ci/read-nix-derivation-source.py "$receipt/runquota-derivation-raw.json" "$runquota_drv" "$runquota_package" "$runtime_system")"
           nix hash path --type sha256 --sri "$runquota_drv_source" > "$receipt/runquota-derivation-source-nar-hash.txt"
           nix path-info --json --recursive "$runquota_package" > "$receipt/runquota-closure.json"
           "$receipt_python" - "$source_root" "$receipt" "$runquota_package" "$runquota_drv" "$runtime_system" <<'PY_RUNQUOTA'
