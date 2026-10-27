@@ -71,8 +71,18 @@ try:
   command_guard(expected)
  ref='git+file://'+str(ROOT)+'?rev='+before['head']+'&shallow=1#ci-monitored-shell'
  expectedDeriver=run(['nix','eval','--raw','--no-update-lock-file',ref+'.drvPath']).decode().strip()
- build=json.loads(run(['nix','build','--no-link','--json','--no-update-lock-file',ref+'.out']));assert len(build)==1 and build[0]['drvPath']==expectedDeriver
+ # Later steps execute this shell through GITHUB_PATH. A --no-link build is
+ # unrooted once nix exits, so a concurrent auto-GC on a shared self-hosted
+ # store can delete it before use. Root it for the job: an indirect root through
+ # an out-link in its own RUNNER_TEMP directory, outside every uploaded glob.
+ gcRoots=Path(tempfile.mkdtemp(prefix='pty-gcroot-monitored-shell-',dir=base));gcRootsID=directory(gcRoots);gcRoot=gcRoots/'bash'
+ def rooted(output):
+  assert gcRoot.is_symlink() and os.readlink(gcRoot)==output and directory(gcRoots)==gcRootsID,'Shell GC root changed'
+  roots=run(['nix-store','--query','--roots',output]).decode().splitlines()
+  assert any(line.split(' -> ')[0]==str(gcRoot) for line in roots),'Shell output is not rooted by its out-link'
+ build=json.loads(run(['nix','build','--out-link',str(gcRoot),'--json','--no-update-lock-file',ref+'.out']));assert len(build)==1 and build[0]['drvPath']==expectedDeriver
  output=build[0]['outputs']['out'];assert output.startswith('/nix/store/') and '\n' not in output
+ rooted(output)
  shell=Path(output)/'bin/sh';bash=Path(output)/'bin/bash';shellImages={str(p):image(p) for p in [shell,bash]}
  for data in shellImages.values():assert data['resolved'].startswith(output+'/')
  version=run([str(bash),'--version']);assert version.startswith(b'GNU bash, version ') and int(version.split(b'version ')[1].split(b'.')[0])>=4
@@ -90,8 +100,8 @@ try:
   written=os.write(fd,remaining);assert written>0;remaining=remaining[written:]
  os.fsync(fd)
  guards(original+addition)
- assert initialClosure==closure(output)
- R.update(success=True,sourceAfter=source(),toolsAfter={role:image(v['lexical']) for role,v in tools.items()},closureAfter=closure(output),activationSHA=hashlib.sha256(original+addition).hexdigest(),activationScope='Held GITHUB_PATH append complete; existing sandbox authority not modified')
+ assert initialClosure==closure(output);rooted(output)
+ R.update(success=True,gcRoot=str(gcRoot),sourceAfter=source(),toolsAfter={role:image(v['lexical']) for role,v in tools.items()},closureAfter=closure(output),activationSHA=hashlib.sha256(original+addition).hexdigest(),activationScope='Held GITHUB_PATH append complete; existing sandbox authority not modified')
 finally:
  if fd is not None:os.close(fd)
  R['controllerSHA']=sha(Path(__file__));(receipt/'receipt.json').write_text(json.dumps(R,indent=2)+'\n')

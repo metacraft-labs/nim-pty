@@ -55,6 +55,11 @@ before=source();gitConfiguration=run(['git','config','--null','--show-origin','-
 tools={role:declared_tool(role) for role in ['git','nix']};tools['python']=image(sys.executable)
 base=Path(os.environ['RUNNER_TEMP']).resolve(strict=True);baseID=directory(base)
 receipt=Path(tempfile.mkdtemp(prefix='pty-macos-repro-runtime-',dir=base));receiptID=directory(receipt)
+gcRoots=Path(tempfile.mkdtemp(prefix='pty-gcroot-repro-runtime-',dir=base));gcRootsID=directory(gcRoots);gcRoot=gcRoots/'reprobuild'
+def rooted(output):
+ assert gcRoot.is_symlink() and os.readlink(gcRoot)==output and directory(gcRoots)==gcRootsID,'Runtime GC root changed'
+ roots=run(['nix-store','--query','--roots',output]).decode().splitlines()
+ assert any(line.split(' -> ')[0]==str(gcRoot) for line in roots),'Runtime output is not rooted by its out-link'
 held=[]
 def guard_files(expected):
  for command,fd,identity,original in held:
@@ -84,8 +89,14 @@ try:
  assert run(['nix','hash','path','--type','sha256','--sri',metadata['path']]).decode().strip()==metadata['locked']['narHash']
  R.update(runtimeSource=metadata,runtimeSourcePrefetch=prefetch)
  drv=run(['nix','eval','--raw','--no-update-lock-file',ref+'.drvPath']).decode().strip()
- build=json.loads(run(['nix','build','--no-link','--json','--no-update-lock-file',ref]));assert len(build)==1 and build[0]['drvPath']==drv
+ # Later steps execute this output through GITHUB_PATH/GITHUB_ENV. A --no-link
+ # build is unrooted once nix exits, and a concurrent auto-GC on a shared
+ # self-hosted store deleted it mid-build (dyld: inserted monitor shim missing).
+ # Root it for the job: an indirect root through an out-link in its own
+ # RUNNER_TEMP directory, outside every uploaded receipt glob.
+ build=json.loads(run(['nix','build','--out-link',str(gcRoot),'--json','--no-update-lock-file',ref]));assert len(build)==1 and build[0]['drvPath']==drv
  output=build[0]['outputs']['out'];assert output.startswith('/nix/store/') and '\n' not in output
+ rooted(output)
  principals={name:image(Path(output)/name) for name in ['bin/repro','bin/.repro-wrapped','libexec/reprobuild-nix-daemon']}
  for data in principals.values():assert data['resolved'].startswith(output+'/')
  daemonPath=Path(output)/'libexec/reprobuild-nix-daemon'
@@ -111,8 +122,8 @@ try:
   while pending:
    count=os.write(fd,pending);assert count>0;pending=pending[count:]
   os.fsync(fd);expected[str(command)]=original+addition;guard_files(expected)
- guards(expected);assert initialClosure==closure(output)
- R.update(success=True,sourceBefore=before,sourceAfter=source(),toolsBefore=tools,toolsAfter={role:image(data['lexical']) for role,data in tools.items()},build=build,closureBefore=initialClosure,closureAfter=closure(output),principals=principals,daemonInterpreter=daemonInterpreter,nativeImageCPUs=cpus,runtimeVersionSHA=hashlib.sha256(runtimeVersion).hexdigest(),daemonHelpSHA=hashlib.sha256(daemonHelp).hexdigest(),activationScope='Both held command files appended and verified; partial activation on failure is not success')
+ guards(expected);assert initialClosure==closure(output);rooted(output)
+ R.update(success=True,gcRoot=str(gcRoot),sourceBefore=before,sourceAfter=source(),toolsBefore=tools,toolsAfter={role:image(data['lexical']) for role,data in tools.items()},build=build,closureBefore=initialClosure,closureAfter=closure(output),principals=principals,daemonInterpreter=daemonInterpreter,nativeImageCPUs=cpus,runtimeVersionSHA=hashlib.sha256(runtimeVersion).hexdigest(),daemonHelpSHA=hashlib.sha256(daemonHelp).hexdigest(),activationScope='Both held command files appended and verified; partial activation on failure is not success')
 finally:
  for command,fd,identity,original in held:os.close(fd)
  R['controllerSHA']=sha(Path(__file__));(receipt/'receipt.json').write_text(json.dumps(R,indent=2)+'\n')
