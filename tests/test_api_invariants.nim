@@ -33,31 +33,47 @@ suite "L1: API invariants":
     # echo below proves it didn't.
     discard
 
-  test "explicit close() is idempotent on PtyHandle":
-    var (m, s) = openPty()
-    close(m)
-    close(m)  # second close — must not panic, must not double-close fd
-    close(s)
-    close(s)
-    check true
+  # The three cases below need a real pty. On Windows the backend is the
+  # documented ConPTY stub (L1), so there they assert the stub's contract
+  # instead: every call that would allocate a pty refuses with
+  # PtyUnimplementedError rather than returning an unusable handle.
+  when defined(windows):
+    test "Windows stub: openPty refuses with PtyUnimplementedError":
+      expect PtyUnimplementedError:
+        discard openPty()
 
-  test "explicit close() is idempotent on PtySession":
-    let bin = requireBin("true")
-    var sess = spawnPty(bin, [], inheritedEnv(),
-      SpawnOptions(cols: 80, rows: 24))
-    close(sess)
-    close(sess)
-    check true
+    test "Windows stub: spawnPty refuses with PtyUnimplementedError":
+      expect PtyUnimplementedError:
+        discard spawnPty("cmd.exe", [], newSeq[(string, string)](), SpawnOptions(cols: 80, rows: 24))
 
-  test "isOpen reflects state":
-    var (m, s) = openPty()
-    check isOpen(m)
-    check isOpen(s)
-    close(m)
-    check (not isOpen(m))
-    check isOpen(s)
-    close(s)
-    check (not isOpen(s))
+    test "Windows stub: capability probe reports no ConPTY":
+      check not isConPtySupported()
+  else:
+    test "explicit close() is idempotent on PtyHandle":
+      var (m, s) = openPty()
+      close(m)
+      close(m)  # second close — must not panic, must not double-close fd
+      close(s)
+      close(s)
+      check true
+
+    test "explicit close() is idempotent on PtySession":
+      let bin = requireBin("true")
+      var sess = spawnPty(bin, [], inheritedEnv(),
+        SpawnOptions(cols: 80, rows: 24))
+      close(sess)
+      close(sess)
+      check true
+
+    test "isOpen reflects state":
+      var (m, s) = openPty()
+      check isOpen(m)
+      check isOpen(s)
+      close(m)
+      check (not isOpen(m))
+      check isOpen(s)
+      close(s)
+      check (not isOpen(s))
 
   test "PtyHandle field types are concrete (no ref/ptr in API)":
     # This is a smoke test — if the API ever sneaks in a `ref object` for
