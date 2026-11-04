@@ -91,9 +91,11 @@
 ## No test file in this repo is host-exclusive to Windows/macOS in a way that
 ## makes it uncompilable on Linux: every one either has no OS gate or a
 ## ``when defined(windows): skip() else: <real body>`` in-test guard, so all
-## runnable tests are in the Linux graph. There are no ``when defined(...)``
-## extraction gates needed for the test set on this host beyond the
-## ``-lutil`` link flag.
+## runnable tests are in the Linux and macOS graphs. On Windows the backend
+## is the documented ConPTY stub, so the POSIX-backend tests are not run
+## there: the portable tests run, and the backend tests that use only the
+## public surface are compiled (build edge, no execute edge) as the stub's
+## compile-only path.
 ##
 ## **Tool provisioning.** ``defaultToolProvisioning "path"`` matches the
 ## canonical recipes: the nix dev shell puts ``nim`` + ``gcc`` on ``PATH``,
@@ -122,12 +124,12 @@ type
     source: string
     binary: string
 
-const portableTestSpecs: seq[PtyTestSpec] = @[
-  # Tests with no host-exclusive gate — each either has no OS ``when`` at all
-  # or an in-``test`` ``when defined(windows): skip() else: <body>`` — so they
-  # compile + run to exit 0 on this Linux host. On a POSIX host that includes
-  # the POSIX-backend tests (``test_pty_signals`` imports ``std/posix``,
-  # ``test_no_leaks`` guards its bodies with ``ifLinux``).
+const posixBackendTestSpecs: seq[PtyTestSpec] = @[
+  # Tests that drive the real POSIX backend (``openpty``/``fork``/``execve``,
+  # signals, ``/proc``). They run on Linux and macOS. On Windows the backend
+  # is the documented ConPTY stub (L1: every call raises
+  # ``PtyUnimplementedError``), so running them there would only exercise
+  # the stub's refusal; L1 asks for the stub's compile-only path instead.
   PtyTestSpec(source: "tests/test_pty_spawn_echo.nim",
     binary: "build/test-bin/test_pty_spawn_echo"),
   PtyTestSpec(source: "tests/test_pty_signals.nim",
@@ -138,6 +140,25 @@ const portableTestSpecs: seq[PtyTestSpec] = @[
     binary: "build/test-bin/test_no_leaks"),
   PtyTestSpec(source: "tests/test_utf8_split.nim",
     binary: "build/test-bin/test_utf8_split"),
+]
+
+const windowsStubCompileSpecs: seq[PtyTestSpec] = @[
+  # The POSIX-backend tests that use only the public ``nim_pty`` surface
+  # (no ``std/posix``). On Windows they are compiled, not run, against the
+  # stub: that is the L1 "compile-only path" which proves the stub keeps
+  # every signature cross-platform consumers call. ``test_pty_signals`` and
+  # ``test_no_leaks`` import ``std/posix`` and cannot compile there.
+  PtyTestSpec(source: "tests/test_pty_spawn_echo.nim",
+    binary: "build/test-bin/test_pty_spawn_echo"),
+  PtyTestSpec(source: "tests/test_pty_window_size.nim",
+    binary: "build/test-bin/test_pty_window_size"),
+  PtyTestSpec(source: "tests/test_utf8_split.nim",
+    binary: "build/test-bin/test_utf8_split"),
+]
+
+const portableTestSpecs: seq[PtyTestSpec] = @[
+  # Tests that run on every platform: each has no OS gate or an in-``test``
+  # ``when defined(windows): skip() else: <body>`` guard.
   PtyTestSpec(source: "tests/test_pty_cross_platform.nim",
     binary: "build/test-bin/test_pty_cross_platform"),
   PtyTestSpec(source: "tests/test_api_invariants.nim",
@@ -209,7 +230,8 @@ package nim_pty:
     discard ptyPool
 
     proc emitTestPair(source, binary: string;
-                      buildActions, executeActions: var seq[BuildActionDef]) =
+                      buildActions, executeActions: var seq[BuildActionDef];
+                      execute = true) =
       var lastSlash = -1
       for i in 0 ..< binary.len:
         if binary[i] == '/' or binary[i] == '\\':
@@ -232,6 +254,8 @@ package nim_pty:
       else:
         appendRegisteredActionToolIdentityRefs(edge.action.id, ["gcc"])
       buildActions.add(edge.action)
+      if not execute:
+        return
       # ``registerImplicitName = false`` because the BUILD edge already owns
       # the binary basename as the implicit target name; the explicit
       # ``actionId`` is the execute edge's selector (two-edge shape).
@@ -244,6 +268,14 @@ package nim_pty:
     for spec in portableTestSpecs:
       emitTestPair(spec.source, spec.binary,
         testBuildActions, testExecuteActions)
+    when defined(windows):
+      for spec in windowsStubCompileSpecs:
+        emitTestPair(spec.source, spec.binary,
+          testBuildActions, testExecuteActions, execute = false)
+    else:
+      for spec in posixBackendTestSpecs:
+        emitTestPair(spec.source, spec.binary,
+          testBuildActions, testExecuteActions)
 
     discard collect("test", testExecuteActions)
     discard collect("test-builds", testBuildActions)

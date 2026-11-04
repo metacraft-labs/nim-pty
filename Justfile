@@ -22,7 +22,8 @@ alias fmt := format
 src-paths := "--path:src --path:tests"
 
 # Hermetic + style checks — applied to every nim invocation in this file.
-nim-flags := "--skipParentCfg --skipUserCfg --styleCheck:usages --styleCheck:error --passL:-lutil"
+# `-lutil` supplies openpty/forkpty on POSIX; MinGW has no libutil.
+nim-flags := "--skipParentCfg --skipUserCfg --styleCheck:usages --styleCheck:error" + if os() == "windows" { "" } else { " --passL:-lutil" }
 
 # Per-checkout nimcache (see config.nims), relative to the recipe working
 # directory, which is this file's directory.  Nim's default,
@@ -32,14 +33,22 @@ nim-flags := "--skipParentCfg --skipUserCfg --styleCheck:usages --styleCheck:err
 nimcache := ".nimcache"
 
 # The ordered list of test files. Adding a new test_*.nim here gates it on CI.
-tests := "tests/test_pty_spawn_echo.nim tests/test_pty_signals.nim tests/test_pty_window_size.nim tests/test_no_leaks.nim tests/test_utf8_split.nim tests/test_pty_cross_platform.nim tests/test_api_invariants.nim tests/test_nimcache_is_worktree_local.nim"
+# The first five drive the real POSIX backend. On Windows the backend is the
+# documented ConPTY stub (L1), so there they are not run; the three that use
+# only the public surface are compiled by `build` (the stub's compile-only
+# path), and `test_pty_signals` / `test_no_leaks` import std/posix.
+posix-backend-tests := "tests/test_pty_spawn_echo.nim tests/test_pty_signals.nim tests/test_pty_window_size.nim tests/test_no_leaks.nim tests/test_utf8_split.nim"
+portable-tests := "tests/test_pty_cross_platform.nim tests/test_api_invariants.nim tests/test_nimcache_is_worktree_local.nim"
+windows-stub-compile-tests := "tests/test_pty_spawn_echo.nim tests/test_pty_window_size.nim tests/test_utf8_split.nim"
+tests := if os() == "windows" { portable-tests } else { posix-backend-tests + " " + portable-tests }
+build-tests := if os() == "windows" { tests + " " + windows-stub-compile-tests } else { tests }
 
 # --- Default targets (per repo-requirements.md) ---
 
 # Build: compile every test file as a sanity check (no run).
 build:
     @mkdir -p test-logs
-    @for t in {{tests}}; do \
+    @for t in {{build-tests}}; do \
       echo "Building $t"; \
       nim c {{nim-flags}} {{src-paths}} --mm:orc -d:release --threads:on \
           --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)_r \
