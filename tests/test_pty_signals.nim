@@ -5,7 +5,7 @@
 ## a child terminated by signal `N` reports an exit code that we encode
 ## as `-N` in `PtySession.code` (matching the spec in posix.nim).
 
-import std/[options, posix, unittest]
+import std/[options, posix, strutils, times, unittest]
 import nim_pty
 import test_helpers
 
@@ -44,22 +44,21 @@ suite "L1: signal delivery":
     check exit == -int(SIGKILL)
 
   test "terminate() reaps a stubborn child":
-    # Launch a shell that ignores SIGTERM but not SIGKILL; `terminate`
-    # should escalate.
-    let shellBin = findBin("sh")
-    if shellBin.len == 0:
-      skip()
-    else:
-      var sess = spawnPty(shellBin,
-        ["-c", "trap '' TERM; sleep 30"],
-        inheritedEnv(), SpawnOptions(cols: 80, rows: 24))
-      var ts = Timespec(tv_sec: posix.Time(0), tv_nsec: 100_000_000)
-      discard nanosleep(ts, ts)
-      terminate(sess)
-      check sess.exitCode().isSome
-      let code = sess.exitCode().get
-      # The shell ignores SIGTERM, so it should die from SIGKILL (-9).
-      check code == -int(SIGKILL)
+    # The child acknowledges the installed trap before termination begins.
+    # exec keeps the stubborn process at the session's actual child PID.
+    let shellBin = requireBin("sh")
+    const ready = "NIM_PTY_TERM_IGNORED_READY"
+    var sess = spawnPty(shellBin,
+      ["-c", "trap '' TERM; printf '" & ready & "\n'; exec sleep 30"],
+      inheritedEnv(), SpawnOptions(cols: 80, rows: 24))
+    defer: terminate(sess)
+    let output = readUntil(sess, ready, initDuration(seconds = 5))
+    require output.contains(ready)
+    terminate(sess)
+    check sess.exitCode().isSome
+    let code = sess.exitCode().get
+    # The acknowledged child ignores SIGTERM, so it must die from SIGKILL.
+    check code == -int(SIGKILL)
 
   test "isAlive reflects child state":
     let bin = requireBin("sleep")

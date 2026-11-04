@@ -71,6 +71,119 @@ jobs:
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
           owner: metacraft-labs
 
+      - name: Install the release authenticated by the RunQuota bootstrap policy
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        uses: metacraft-labs/metacraft-github-actions/setup-reprobuild@58da84d5af27408ca598ce69caa83b133e054592
+        with:
+          from-source: 'false'
+          repro-version: v0.2.6
+
+      - name: Provision declared Linux Nix acquisition backend
+        if: matrix.os == 'linux'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@dev
+        with:
+          gh-token: ${{ steps.ci_token.outputs.token }}
+          token-owner: metacraft-labs
+
+      - name: Bind explicit Linux Repro runtime source
+        id: linux_runtime
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          NIX_CONFIG: access-tokens = github.com=${{ steps.ci_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          own_sha="$(git rev-parse HEAD)"
+          test "$own_sha" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          own_root="$(git rev-parse --show-toplevel)"
+          receipt_python_out="$(nix build --no-link --print-out-paths --no-update-lock-file "git+file://$own_root?rev=$own_sha&shallow=1#ci-receipt-python")"
+          test -x "$receipt_python_out/bin/python3"
+          receipt_python="$receipt_python_out/bin/python3"
+          package_json="$RUNNER_TEMP/pty-explicit-repro-package.json"
+          acquisition_resources="$(mktemp -d "$RUNNER_TEMP/pty-acquisition-resources.XXXXXXXXXX")"
+          printf 'acquisition_resources=%s\n' "$acquisition_resources" >> "$GITHUB_OUTPUT"
+          # Diagnostics are secondary: preserve the acquisition's actual exit,
+          # including when resource metadata is unavailable in a VM namespace.
+          "$receipt_python" ci/capture-linux-acquisition-resources.py "$acquisition_resources/before.json" || printf 'before snapshot unavailable\n' >&2
+          if nix build --no-link --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d#reprobuild' > "$package_json"; then
+            acquisition_exit=0
+          else
+            acquisition_exit=$?
+          fi
+          printf '{"exitCode":%s}\n' "$acquisition_exit" > "$acquisition_resources/exit.json" || printf 'exit receipt unavailable\n' >&2
+          "$receipt_python" ci/capture-linux-acquisition-resources.py "$acquisition_resources/after.json" || printf 'after snapshot unavailable\n' >&2
+          test "$acquisition_exit" -eq 0 || exit "$acquisition_exit"
+          package="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(x[0]["outputs"]["out"])' "$package_json")"
+          # A self-hosted runner may retain receipts from earlier jobs. Allocate
+          # exclusively and export this job's path without touching prior evidence.
+          receipt="$(mktemp -d "$RUNNER_TEMP/pty-repro-runtime-receipt.XXXXXXXXXX")"
+          printf 'receipt_path=%s\n' "$receipt" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$receipt_python_out" > "$receipt/python-output.txt"
+          nix path-info --derivation "$receipt_python_out" > "$receipt/python-derivation.txt"
+          sha256sum "$receipt_python" > "$receipt/python-executable.sha256"
+          "$receipt_python" --version > "$receipt/python-version.txt"
+          "$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(json.dumps({"drvPath":x[0]["drvPath"],"outputs":x[0]["outputs"]},indent=2))' "$package_json" > "$receipt/package.json"
+          test -x "$package/bin/repro"
+          test -x "$package/bin/.repro-wrapped"
+          test -x "$package/libexec/reprobuild-nix-daemon"
+          printf 'REPROBUILD_REPRO=%s/bin/repro\n' "$package" >> "$GITHUB_ENV"
+          printf 'REPROBUILD_NIX_DAEMON_BIN=%s/libexec/reprobuild-nix-daemon\n' "$package" >> "$GITHUB_ENV"
+          printf '%s/bin\n' "$package" >> "$GITHUB_PATH"
+          nix flake metadata --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d' > "$RUNNER_TEMP/pty-explicit-repro-source.json"
+          "$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; print(json.dumps({"locked":x["locked"],"path":x["path"]},indent=2))' "$RUNNER_TEMP/pty-explicit-repro-source.json" > "$receipt/source.json"
+          source_root="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert x["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; print(x["path"])' "$RUNNER_TEMP/pty-explicit-repro-source.json")"
+          nix flake prefetch --json --no-update-lock-file 'github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d' > "$receipt/source-prefetch.json"
+          "$receipt_python" -c 'import json,sys; metadata=json.load(open(sys.argv[1])); prefetch=json.load(open(sys.argv[2])); assert metadata["locked"]["rev"]=="76659f5730ecf698b1963c656494d2cb66eb256d"; assert prefetch["storePath"]==metadata["path"]; assert prefetch["hash"]==metadata["locked"]["narHash"]' "$RUNNER_TEMP/pty-explicit-repro-source.json" "$receipt/source-prefetch.json"
+          nix hash path --type sha256 --sri "$source_root" > "$receipt/source-realized-nar-hash.txt"
+          "$receipt_python" -c 'import json,sys; metadata=json.load(open(sys.argv[1])); assert open(sys.argv[2]).read().strip()==metadata["locked"]["narHash"]' "$RUNNER_TEMP/pty-explicit-repro-source.json" "$receipt/source-realized-nar-hash.txt"
+          sha256sum "$source_root/flake.nix" "$source_root/flake.lock" "$package/bin/repro" "$package/bin/.repro-wrapped" "$package/libexec/reprobuild-nix-daemon" | tee "$receipt/identities.sha256"
+
+          # The standalone CLI package does not carry the RunQuota daemon.
+          # Select its public package through this exact SDK's locked input, so
+          # the SDK's follows graph and source revision govern the daemon too.
+          runtime_system="$("$receipt_python" -c 'import platform,sys; assert sys.platform=="linux"; machine=platform.machine(); assert machine in ("x86_64","aarch64","arm64"); print({"x86_64":"x86_64-linux","aarch64":"aarch64-linux","arm64":"aarch64-linux"}[machine])')"
+          runquota_expr="(builtins.getFlake \"github:metacraft-labs/reprobuild/76659f5730ecf698b1963c656494d2cb66eb256d\").inputs.runquota-src.packages.$runtime_system.default"
+          nix build --no-link --json --no-update-lock-file --expr "$runquota_expr" > "$receipt/runquota-package-raw.json"
+          runquota_package="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(x[0]["outputs"]["out"])' "$receipt/runquota-package-raw.json")"
+          runquota_drv="$("$receipt_python" -c 'import json,sys; x=json.load(open(sys.argv[1])); assert len(x)==1; print(x[0]["drvPath"])' "$receipt/runquota-package-raw.json")"
+          nix derivation show "$runquota_drv" > "$receipt/runquota-derivation-raw.json"
+          "$receipt_python" -B -m unittest discover -s ci -p test_nix_derivation_source.py
+          runquota_drv_source="$("$receipt_python" ci/read-nix-derivation-source.py "$receipt/runquota-derivation-raw.json" "$runquota_drv" "$runquota_package" "$runtime_system")"
+          nix hash path --type sha256 --sri "$runquota_drv_source" > "$receipt/runquota-derivation-source-nar-hash.txt"
+          nix path-info --json --recursive "$runquota_package" > "$receipt/runquota-closure.json"
+          "$receipt_python" - "$source_root" "$receipt" "$runquota_package" "$runquota_drv" "$runtime_system" <<'PY_RUNQUOTA'
+          import hashlib,json,os,sys
+          from pathlib import Path
+          source,receipt,package,drv,system=sys.argv[1:];receipt=Path(receipt);package=Path(package)
+          lock=json.loads((Path(source)/'flake.lock').read_text());node=lock['nodes'][lock['nodes'][lock['root']]['inputs']['runquota-src']]['locked']
+          assert node['type']=='github' and node['owner']=='metacraft-labs' and node['repo']=='runquota' and len(node['rev'])==40
+          assert (receipt/'runquota-derivation-source-nar-hash.txt').read_text().strip()==node['narHash']
+          images={};expected_machine={'x86_64-linux':62,'aarch64-linux':183}[system]
+          for name in ('runquota','runquotad'):
+              executable=package/'bin'/name;assert executable.is_file() and os.access(executable,os.X_OK)
+              body=executable.read_bytes();assert body[:6]==b'\x7fELF\x02\x01' and int.from_bytes(body[18:20],'little')==expected_machine
+              images[name]=hashlib.sha256(body).hexdigest()
+          closure=json.loads((receipt/'runquota-closure.json').read_text());rows=closure if isinstance(closure,list) else [dict(value,path=key) for key,value in closure.items()]
+          assert any(row['path']==str(package) for row in rows)
+          (receipt/'runquota-identity.json').write_text(json.dumps({'selectedSDK':'76659f5730ecf698b1963c656494d2cb66eb256d','lockedRunQuotaInput':node,'system':system,'package':str(package),'drvPath':drv,'imagesSHA256':images,'closureSHA256':hashlib.sha256((receipt/'runquota-closure.json').read_bytes()).hexdigest()},indent=2)+'\n')
+          PY_RUNQUOTA
+          printf 'RUNQUOTAD_BIN=%s/bin/runquotad\n' "$runquota_package" >> "$GITHUB_ENV"
+          printf '%s/bin\n' "$runquota_package" >> "$GITHUB_PATH"
+
+
+      - name: Retain Linux runtime source and package identities
+        if: always() && matrix.os == 'linux' && steps.linux_runtime.outputs.receipt_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-repro-runtime-${{ matrix.arch }}
+          path: ${{ steps.linux_runtime.outputs.receipt_path }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Setup consumes Repro to materialize this environment. Acquire the exact
+      # declared Linux package first, including on runners without a release asset.
       - name: Setup dev env (reprobuild flavor)
         # setup-dev-env clones the siblings listed in .github/sibling-repos
         # (codetracer-trace-format, codetracer-trace-format-nim) at the
@@ -78,26 +191,293 @@ jobs:
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:
           env-flavor: reprobuild
+          repro-build-pin: 76659f5730ecf698b1963c656494d2cb66eb256d
           gh-token: ${{ steps.ci_token.outputs.token }}
+
+      - name: Provision declared macOS Nix shell acquisition backend
+        if: matrix.os == 'macos'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@3fcbb26dd920adf6ccc64a87c6d24797ab0b5d94
+        with:
+          gh-token: ${{ steps.ci_token.outputs.token }}
+          token-owner: metacraft-labs
+
+      - name: Bind owning non-SIP monitored shell
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          own_sha="$(git rev-parse HEAD)"
+          test "$own_sha" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          own_root="$(git rev-parse --show-toplevel)"
+          receipt_python_out="$(nix build --no-link --print-out-paths --no-update-lock-file "git+file://$own_root?rev=$own_sha&shallow=1#ci-receipt-python")"
+          test -x "$receipt_python_out/bin/python3"
+          "$receipt_python_out/bin/python3" -B ci/acquire-monitored-shell.py
+
+      - name: Retain monitored shell acquisition authority
+        if: always() && matrix.os == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-monitored-shell-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pty-monitored-shell-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Bind declared macOS Repro runtime companion
+        if: matrix.os == 'macos'
+        shell: bash
+        env:
+          NIX_CONFIG: access-tokens = github.com=${{ steps.ci_token.outputs.token }}
+        run: |
+          set -euo pipefail
+          own_sha="$(git rev-parse HEAD)"
+          test "$own_sha" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+          own_root="$(git rev-parse --show-toplevel)"
+          receipt_python_out="$(nix build --no-link --print-out-paths --no-update-lock-file "git+file://$own_root?rev=$own_sha&shallow=1#ci-receipt-python")"
+          test -x "$receipt_python_out/bin/python3"
+          "$receipt_python_out/bin/python3" -B ci/acquire-darwin-repro-companion.py
+
+      - name: Retain macOS Repro runtime companion authority
+        if: always() && matrix.os == 'macos'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-macos-repro-runtime-${{ matrix.arch }}
+          path: ${{ runner.temp }}/pty-macos-repro-runtime-*/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Acquire official native Windows Python for compiler preparation
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/acquire-native-python.ps1 -Architecture "${{ matrix.arch }}"
+
+      - name: Claim the exclusive released RunQuota authentication helper directory
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
+        run: '"$NIM_NATIVE_PYTHON" -B ci/qualify-actions-native-contracts.py prepare'
+
+      - name: Materialize the immutable released RunQuota authentication helpers
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
+          NIM_NATIVE_CHECKOUT_TOKEN: ${{ steps.ci_token.outputs.token }}
+          GIT_CONFIG_PARAMETERS: ${{ env.GIT_CONFIG_PARAMETERS != '' && format('{0} ', env.GIT_CONFIG_PARAMETERS) || '' }}'core.autocrlf'='false' 'core.eol'='lf' 'core.attributesfile'=''
+        run: '"$NIM_NATIVE_PYTHON" -B ci/qualify-actions-native-contracts.py checkout x64'
+
+      - name: Build the matching released RunQuota compiler prerequisite
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: bash
+        env:
+          NIM_CI_NAMESPACE: declared-ci-${{ github.run_id }}-${{ github.run_attempt }}-windows-x64-${{ strategy.job-index }}
+          NIM_RUNQUOTA_BOOTSTRAP_TOKEN: ${{ steps.ci_token.outputs.token }}
+        run: '"$NIM_NATIVE_PYTHON" -B ci/bootstrap-windows-runquota.py'
+
+      - name: Bind the complete declared Windows x64 GCC profile to compile edges
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        # Provisioning backstop only; original product-test budgets are unchanged.
+        timeout-minutes: 15
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/acquire-windows-gcc-profile.ps1
 
       - name: repro build
         # Builds the conventional `build` collection declared in
         # `repro.nim`. Verifies the primary shipping artefact (the
         # recorder binary or extension) materialises through the
         # reprobuild engine identically to `just build`.
-        run: dev-exec repro build
+        if: matrix.os != 'linux'
+        id: repro_build
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const capture = require('./ci/capture-repro-command.cjs');
+            await capture({ core, exec, collection: 'build' });
+
+      - name: Mint current installation token for Linux build resolution
+        if: matrix.os == 'linux'
+        id: linux_build_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      - name: repro build (explicit Linux runtime)
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
+          PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_build_token.outputs.token }}
+        run: |
+          test -n "$PTY_CURRENT_NIX_TOKEN" || { echo "::error::PTY Nix credential prerequisite refused: current-token-empty" >&2; exit 1; }
+          [[ -n "$PTY_CURRENT_NIX_TOKEN" && ! "$PTY_CURRENT_NIX_TOKEN" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: current-token-format" >&2; exit 1; }
+          [[ -n "$PTY_PUBLIC_NIX_TOKEN" && ! "$PTY_PUBLIC_NIX_TOKEN" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: public-token-format" >&2; exit 1; }
+          pty_inherited_count=0
+          while IFS= read -r pty_raw_line; do
+            pty_raw_line="${pty_raw_line%%#*}"
+            if [[ "$pty_raw_line" =~ ^[[:space:]]*(extra-)?access-tokens[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+              pty_raw_value="${BASH_REMATCH[2]}"
+              read -r -a pty_raw_tokens <<< "$pty_raw_value" || true
+              for pty_raw_mapping in "${pty_raw_tokens[@]}"; do
+                if [[ "${pty_raw_mapping%%=*}" == github.com && "$pty_raw_mapping" == *=* ]]; then
+                  pty_inherited_token="${pty_raw_mapping#*=}"
+                  [[ -n "$pty_inherited_token" && ! "$pty_inherited_token" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-token-format" >&2; exit 1; }
+                  pty_inherited_count=$((pty_inherited_count + 1))
+                  [[ "$pty_inherited_count" == 1 ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-github-duplicate" >&2; exit 1; }
+                fi
+              done
+            fi
+          done <<< "${NIX_CONFIG-}"
+          unset pty_inherited_count pty_raw_line pty_raw_value pty_raw_tokens pty_raw_mapping pty_inherited_token
+          # Setup may install nix.conf without exporting NIX_CONFIG.
+          # Capture effective mappings in memory; never log credential values.
+          pty_access_tokens="$(nix config show access-tokens 2>/dev/null)" || { echo "::error::PTY Nix credential prerequisite refused: effective-config-query" >&2; exit 1; }
+          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-owner-prefix-present" >&2; exit 1; }
+          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([^[:space:][:cntrl:]#]+)($|[[:space:]]) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-missing-or-invalid" >&2; exit 1; }
+          pty_boundary="${BASH_REMATCH[1]}"
+          pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
+          pty_remaining="${pty_access_tokens#*"$pty_mapping"}"
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-duplicate" >&2; exit 1; }
+          pty_access_tokens="${pty_access_tokens/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}"
+          export NIX_CONFIG="${NIX_CONFIG-}
+          access-tokens = $pty_access_tokens
+          extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
+          unset pty_access_tokens pty_boundary pty_mapping pty_remaining
+          cd "$GITHUB_WORKSPACE"
+          test -f repro.nim
+          "$REPROBUILD_REPRO" build --daemon=off --tool-provisioning=path
 
       - name: repro test
         # Materialises the `test` collection.
-        run: dev-exec repro test
+        if: matrix.os != 'linux'
+        id: repro_test
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
+        with:
+          script: |
+            const capture = require('./ci/capture-repro-command.cjs');
+            await capture({ core, exec, collection: 'test' });
+
+      - name: Mint current installation token for Linux test resolution
+        if: matrix.os == 'linux'
+        id: linux_test_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      - name: repro test (explicit Linux runtime)
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
+          PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_test_token.outputs.token }}
+        run: |
+          test -n "$PTY_CURRENT_NIX_TOKEN" || { echo "::error::PTY Nix credential prerequisite refused: current-token-empty" >&2; exit 1; }
+          [[ -n "$PTY_CURRENT_NIX_TOKEN" && ! "$PTY_CURRENT_NIX_TOKEN" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: current-token-format" >&2; exit 1; }
+          [[ -n "$PTY_PUBLIC_NIX_TOKEN" && ! "$PTY_PUBLIC_NIX_TOKEN" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: public-token-format" >&2; exit 1; }
+          pty_inherited_count=0
+          while IFS= read -r pty_raw_line; do
+            pty_raw_line="${pty_raw_line%%#*}"
+            if [[ "$pty_raw_line" =~ ^[[:space:]]*(extra-)?access-tokens[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+              pty_raw_value="${BASH_REMATCH[2]}"
+              read -r -a pty_raw_tokens <<< "$pty_raw_value" || true
+              for pty_raw_mapping in "${pty_raw_tokens[@]}"; do
+                if [[ "${pty_raw_mapping%%=*}" == github.com && "$pty_raw_mapping" == *=* ]]; then
+                  pty_inherited_token="${pty_raw_mapping#*=}"
+                  [[ -n "$pty_inherited_token" && ! "$pty_inherited_token" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-token-format" >&2; exit 1; }
+                  pty_inherited_count=$((pty_inherited_count + 1))
+                  [[ "$pty_inherited_count" == 1 ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-github-duplicate" >&2; exit 1; }
+                fi
+              done
+            fi
+          done <<< "${NIX_CONFIG-}"
+          unset pty_inherited_count pty_raw_line pty_raw_value pty_raw_tokens pty_raw_mapping pty_inherited_token
+          # Setup may install nix.conf without exporting NIX_CONFIG.
+          # Capture effective mappings in memory; never log credential values.
+          pty_access_tokens="$(nix config show access-tokens 2>/dev/null)" || { echo "::error::PTY Nix credential prerequisite refused: effective-config-query" >&2; exit 1; }
+          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-owner-prefix-present" >&2; exit 1; }
+          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([^[:space:][:cntrl:]#]+)($|[[:space:]]) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-missing-or-invalid" >&2; exit 1; }
+          pty_boundary="${BASH_REMATCH[1]}"
+          pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
+          pty_remaining="${pty_access_tokens#*"$pty_mapping"}"
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-duplicate" >&2; exit 1; }
+          pty_access_tokens="${pty_access_tokens/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}"
+          export NIX_CONFIG="${NIX_CONFIG-}
+          access-tokens = $pty_access_tokens
+          extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
+          unset pty_access_tokens pty_boundary pty_mapping pty_remaining
+          cd "$GITHUB_WORKSPACE"
+          "$REPROBUILD_REPRO" test --daemon=off --tool-provisioning=path
 
       - name: just build (cross-check)
         # Re-runs the legacy `just build` path inside the same env so
         # we catch silent divergences between `repro build` outputs
         # and what the dev shell + Justfile produce today.
+        if: matrix.os != 'linux'
         run: dev-exec just build
 
+      - name: Mint current installation token for Linux build cross-check resolution
+        if: matrix.os == 'linux'
+        id: linux_build_crosscheck_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      - name: just build (explicit Linux credential cross-check)
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
+          PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_build_crosscheck_token.outputs.token }}
+        run: |
+          test -n "$PTY_CURRENT_NIX_TOKEN" || { echo "::error::PTY Nix credential prerequisite refused: current-token-empty" >&2; exit 1; }
+          [[ -n "$PTY_CURRENT_NIX_TOKEN" && ! "$PTY_CURRENT_NIX_TOKEN" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: current-token-format" >&2; exit 1; }
+          [[ -n "$PTY_PUBLIC_NIX_TOKEN" && ! "$PTY_PUBLIC_NIX_TOKEN" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: public-token-format" >&2; exit 1; }
+          pty_inherited_count=0
+          while IFS= read -r pty_raw_line; do
+            pty_raw_line="${pty_raw_line%%#*}"
+            if [[ "$pty_raw_line" =~ ^[[:space:]]*(extra-)?access-tokens[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+              pty_raw_value="${BASH_REMATCH[2]}"
+              read -r -a pty_raw_tokens <<< "$pty_raw_value" || true
+              for pty_raw_mapping in "${pty_raw_tokens[@]}"; do
+                if [[ "${pty_raw_mapping%%=*}" == github.com && "$pty_raw_mapping" == *=* ]]; then
+                  pty_inherited_token="${pty_raw_mapping#*=}"
+                  [[ -n "$pty_inherited_token" && ! "$pty_inherited_token" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-token-format" >&2; exit 1; }
+                  pty_inherited_count=$((pty_inherited_count + 1))
+                  [[ "$pty_inherited_count" == 1 ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-github-duplicate" >&2; exit 1; }
+                fi
+              done
+            fi
+          done <<< "${NIX_CONFIG-}"
+          unset pty_inherited_count pty_raw_line pty_raw_value pty_raw_tokens pty_raw_mapping pty_inherited_token
+          # Setup may install nix.conf without exporting NIX_CONFIG.
+          # Capture effective mappings in memory; never log credential values.
+          pty_access_tokens="$(nix config show access-tokens 2>/dev/null)" || { echo "::error::PTY Nix credential prerequisite refused: effective-config-query" >&2; exit 1; }
+          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-owner-prefix-present" >&2; exit 1; }
+          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([^[:space:][:cntrl:]#]+)($|[[:space:]]) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-missing-or-invalid" >&2; exit 1; }
+          pty_boundary="${BASH_REMATCH[1]}"
+          pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
+          pty_remaining="${pty_access_tokens#*"$pty_mapping"}"
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-duplicate" >&2; exit 1; }
+          pty_access_tokens="${pty_access_tokens/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}"
+          export NIX_CONFIG="${NIX_CONFIG-}
+          access-tokens = $pty_access_tokens
+          extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
+          unset pty_access_tokens pty_boundary pty_mapping pty_remaining
+          cd "$GITHUB_WORKSPACE"
+          dev-exec just build
+
+
       - name: just test (cross-check)
+        if: matrix.os != 'linux'
         run: dev-exec just test
 
       # Diagnostics on failure. Three things below are load-bearing:
@@ -129,6 +509,60 @@ jobs:
       # fails earlier than x64, and x64 fails for an unrelated project-level reason
       # (`cannot open file: results`, codetracer_ct_print.nim(24, 8)). These
       # artifacts are the only way to find out why any of it actually fails.
+      - name: Mint current installation token for Linux test cross-check resolution
+        if: matrix.os == 'linux'
+        id: linux_test_crosscheck_token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
+      - name: just test (explicit Linux credential cross-check)
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          PTY_PUBLIC_NIX_TOKEN: ${{ github.token }}
+          PTY_CURRENT_NIX_TOKEN: ${{ steps.linux_test_crosscheck_token.outputs.token }}
+        run: |
+          test -n "$PTY_CURRENT_NIX_TOKEN" || { echo "::error::PTY Nix credential prerequisite refused: current-token-empty" >&2; exit 1; }
+          [[ -n "$PTY_CURRENT_NIX_TOKEN" && ! "$PTY_CURRENT_NIX_TOKEN" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: current-token-format" >&2; exit 1; }
+          [[ -n "$PTY_PUBLIC_NIX_TOKEN" && ! "$PTY_PUBLIC_NIX_TOKEN" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: public-token-format" >&2; exit 1; }
+          pty_inherited_count=0
+          while IFS= read -r pty_raw_line; do
+            pty_raw_line="${pty_raw_line%%#*}"
+            if [[ "$pty_raw_line" =~ ^[[:space:]]*(extra-)?access-tokens[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+              pty_raw_value="${BASH_REMATCH[2]}"
+              read -r -a pty_raw_tokens <<< "$pty_raw_value" || true
+              for pty_raw_mapping in "${pty_raw_tokens[@]}"; do
+                if [[ "${pty_raw_mapping%%=*}" == github.com && "$pty_raw_mapping" == *=* ]]; then
+                  pty_inherited_token="${pty_raw_mapping#*=}"
+                  [[ -n "$pty_inherited_token" && ! "$pty_inherited_token" =~ [[:space:][:cntrl:]#] ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-token-format" >&2; exit 1; }
+                  pty_inherited_count=$((pty_inherited_count + 1))
+                  [[ "$pty_inherited_count" == 1 ]] || { echo "::error::PTY Nix credential prerequisite refused: inherited-github-duplicate" >&2; exit 1; }
+                fi
+              done
+            fi
+          done <<< "${NIX_CONFIG-}"
+          unset pty_inherited_count pty_raw_line pty_raw_value pty_raw_tokens pty_raw_mapping pty_inherited_token
+          # Setup may install nix.conf without exporting NIX_CONFIG.
+          # Capture effective mappings in memory; never log credential values.
+          pty_access_tokens="$(nix config show access-tokens 2>/dev/null)" || { echo "::error::PTY Nix credential prerequisite refused: effective-config-query" >&2; exit 1; }
+          [[ ! "$pty_access_tokens" =~ (^|[[:space:]])github[.]com/metacraft-labs(/|=) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-owner-prefix-present" >&2; exit 1; }
+          [[ "$pty_access_tokens" =~ (^|[[:space:]])github[.]com=([^[:space:][:cntrl:]#]+)($|[[:space:]]) ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-missing-or-invalid" >&2; exit 1; }
+          pty_boundary="${BASH_REMATCH[1]}"
+          pty_mapping="${pty_boundary}github.com=${BASH_REMATCH[2]}"
+          pty_remaining="${pty_access_tokens#*"$pty_mapping"}"
+          [[ ! "$pty_remaining" =~ (^|[[:space:]])github[.]com= ]] || { echo "::error::PTY Nix credential prerequisite refused: effective-public-mapping-duplicate" >&2; exit 1; }
+          pty_access_tokens="${pty_access_tokens/"$pty_mapping"/"${pty_boundary}github.com=$PTY_PUBLIC_NIX_TOKEN"}"
+          export NIX_CONFIG="${NIX_CONFIG-}
+          access-tokens = $pty_access_tokens
+          extra-access-tokens = github.com/metacraft-labs=$PTY_CURRENT_NIX_TOKEN"
+          unset pty_access_tokens pty_boundary pty_mapping pty_remaining
+          cd "$GITHUB_WORKSPACE"
+          dev-exec just test
+
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -140,3 +574,51 @@ jobs:
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn
+
+      - name: Retain Linux acquisition resource evidence
+        if: always() && matrix.os == 'linux' && steps.linux_runtime.outputs.acquisition_resources != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-acquisition-resources-${{ matrix.arch }}
+          path: ${{ steps.linux_runtime.outputs.acquisition_resources }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Retain outer Repro command diagnostics
+        if: always() && (steps.repro_build.outputs.diagnostics != '' || steps.repro_test.outputs.diagnostics != '')
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-command-output-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            ${{ steps.repro_build.outputs.diagnostics }}
+            ${{ steps.repro_test.outputs.diagnostics }}
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Remove only unchanged owned compiler-preparation Python runtime
+        if: always() && runner.os == 'Windows' && matrix.arch == 'x64' && env.NIM_NATIVE_PYTHON_RECEIPT != ''
+        shell: pwsh
+        run: pwsh -NoProfile -File ci/cleanup-native-python.ps1
+
+      - name: Retain native compiler prerequisite identities
+        if: always() && runner.os == 'Windows' && matrix.arch == 'x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pty-native-compiler-prerequisites-${{ matrix.arch }}
+          path: |
+            .repro/native-python-acquisition-*.json
+            .repro/native-python-cleanup-*.json
+            .repro/runquota-bootstrap-*.json
+            .repro/actions-native-contracts/
+            .repro/gcc-profile-acquisition*.json
+            .repro/gcc-profile-streams-*/graph.stderr.log
+            .github/compiler-acquisition/.repro/build/*/build-failure-report.json
+            .github/compiler-acquisition/.repro/build/*/build-engine-cache/actions/*.stdout.log
+            .github/compiler-acquisition/.repro/build/*/build-engine-cache/actions/*.stderr.log
+            .github/compiler-acquisition/.repro/build/*/build-engine-cache/runquota-results/*.json
+            ${{ runner.temp }}/native-runquota-*/*.stdout
+            ${{ runner.temp }}/native-runquota-*/*.stderr
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7

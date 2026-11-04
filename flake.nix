@@ -100,22 +100,30 @@
         {
           checks.pre-commit = preCommit;
           devShells.default = pkgs.mkShell {
-            packages = with pkgs; [
-              nim
-              nimble
-              just
-              nixfmt-rfc-style
-              # Sanitizer-augmented Nim builds need clang on Linux. The
-              # Justfile's `test-asan` recipe expects clang in $PATH.
-              clang
-              # Valgrind for the secondary leak-budget check.
-              valgrind
-            ];
+            packages =
+              with pkgs;
+              [
+                nim
+                nimble
+                just
+                nixfmt-rfc-style
+                # Sanitizer-augmented Nim builds need clang on Linux. The
+                # Justfile's `test-asan` recipe expects clang in $PATH.
+                clang
+              ]
+              ++ lib.optionals stdenv.isLinux [
+                # The secondary Valgrind gate runs on Linux; Darwin has no
+                # supported package in this pinned Nixpkgs revision.
+                valgrind
+              ];
             shellHook = ''
               ${ownRepoOnly installGitHooks}
               echo "nim-pty dev shell — nim $(nim --version 2>&1 | head -1)"
             '';
           };
+          packages.ci-receipt-python = pkgs.python3;
+          packages.ci-monitored-shell = pkgs.bash;
+
           packages.default = pkgs.stdenvNoCC.mkDerivation {
             pname = "nim-pty";
             version = "0.1.0";
