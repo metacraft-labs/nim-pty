@@ -485,7 +485,9 @@ proc read*(s: var PtySession;
   if useTimeout:
     tv.tv_sec = posix.Time(timeout.inSeconds)
     let ms = timeout.inMilliseconds - timeout.inSeconds * 1000
-    tv.tv_usec = clong(ms * 1000)
+    # tv_usec is int32 on macOS and clong on Linux; take the field's own type
+    # so the conversion compiles on both.
+    tv.tv_usec = typeof(tv.tv_usec)(ms * 1000)
 
   var rs: TFdSet
   FD_ZERO(rs)
