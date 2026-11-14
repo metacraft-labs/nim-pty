@@ -76,6 +76,29 @@ proc cExecve(path: cstring;
 
 proc cExit(status: cint) {.importc: "_exit", header: "<unistd.h>".}
 
+proc cSysconf(name: cint): clong {.importc: "sysconf", header: "<unistd.h>".}
+
+var SC_OPEN_MAX {.importc: "_SC_OPEN_MAX", header: "<unistd.h>".}: cint
+
+when defined(linux):
+  proc cCloseRange(first, last: cuint; flags: cint): cint
+    {.importc: "close_range", header: "<unistd.h>".}
+    ## glibc >= 2.34 / Linux >= 5.9. `-1` with ENOSYS on an older kernel,
+    ## which the caller answers with the loop below.
+
+proc closeFdsFrom(first: cint; limit: clong) =
+  ## Close every descriptor from `first` up: called in the forked child,
+  ## between fork() and execve(), so it uses only close() (async-signal-safe)
+  ## and close_range(2); `limit` (the descriptor table's size) is read by the
+  ## parent before the fork, since sysconf() is not on the safe list.
+  when defined(linux):
+    if cCloseRange(cuint(first), high(cuint), 0) == 0:
+      return
+  var fd = first
+  while clong(fd) < limit:
+    discard close(fd)
+    inc fd
+
 var
   F_GETFD {.importc, header: "<fcntl.h>".}: cint
   F_SETFD {.importc, header: "<fcntl.h>".}: cint
@@ -409,6 +432,13 @@ proc spawnPty*(cmd: string;
 
   let cmdC = cstring(cmd)
 
+  # The size of the descriptor table, for the child's close loop (sysconf()
+  # is not async-signal-safe, so it is read here). Capped: a raised RLIMIT
+  # (2^20 and more is common in containers) would make the loop the
+  # slowest part of a spawn on a kernel without close_range.
+  var fdLimit = cSysconf(SC_OPEN_MAX)
+  if fdLimit <= 0 or fdLimit > 65536: fdLimit = 65536
+
   # fork()
   let pid = fork()
   if pid == -1:
@@ -435,6 +465,12 @@ proc spawnPty*(cmd: string;
     if dup2(slaveFd, 2) == -1: cExit(127)
     if slaveFd > 2:
       discard close(slaveFd)
+    # NOTHING ELSE OF THE PARENT'S REACHES THE CHILD. A descriptor the parent
+    # opened without CLOEXEC — Nim's osproc pipes are such, and another thread
+    # may be between its pipe() and fork() right now — would otherwise live
+    # as long as the shell: a parent reading a `git` child's stdout to EOF
+    # then never sees EOF, because the shell holds the pipe's write end too.
+    closeFdsFrom(3, fdLimit)
     # cwd
     if opts.cwd.len > 0:
       if chdir(cstring(opts.cwd)) != 0:

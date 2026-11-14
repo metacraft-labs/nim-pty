@@ -37,7 +37,7 @@ nimcache := ".nimcache"
 # documented ConPTY stub (L1), so there they are not run; the three that use
 # only the public surface are compiled by `build` (the stub's compile-only
 # path), and `test_pty_signals` / `test_no_leaks` import std/posix.
-posix-backend-tests := "tests/test_pty_spawn_echo.nim tests/test_pty_signals.nim tests/test_pty_window_size.nim tests/test_no_leaks.nim tests/test_utf8_split.nim"
+posix-backend-tests := "tests/test_pty_spawn_echo.nim tests/test_pty_inherited_fds.nim tests/test_pty_signals.nim tests/test_pty_window_size.nim tests/test_no_leaks.nim tests/test_utf8_split.nim"
 portable-tests := "tests/test_pty_cross_platform.nim tests/test_api_invariants.nim tests/test_nimcache_is_worktree_local.nim"
 windows-stub-compile-tests := "tests/test_pty_spawn_echo.nim tests/test_pty_window_size.nim tests/test_utf8_split.nim"
 tests := if os() == "windows" { portable-tests } else { posix-backend-tests + " " + portable-tests }
